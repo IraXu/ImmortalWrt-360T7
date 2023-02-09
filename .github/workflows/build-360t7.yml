@@ -110,16 +110,17 @@ jobs:
         echo "默认网关：192.168.6.1" >> release.txt
         echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
         echo "status=success" >> $GITHUB_OUTPUT
+        
     - name: 将固件上传到release
       uses: softprops/action-gh-release@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GIT_USER_TOKEN }}
       with:
-        name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+         name: ${{ steps.tag.outputs.release_name }} 
+         tag_name: ${{ steps.tag.outputs.release_tag }}
+         body_path: release.txt
+         files: ${{ env.FIRMWARE }}/*
 
     - name: 删除工作流运行
       uses: GitRML/delete-workflow-runs@main
