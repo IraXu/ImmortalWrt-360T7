@@ -9,6 +9,8 @@
 
 [![](https://img.shields.io/badge/编译状态-通过-brightgreen.svg)](https://github.com/IraXu/ImmortalWrt-360T7/actions)   [![](https://img.shields.io/badge/最新固件-下载-green.svg)](https://github.com/IraXu/OpenWrt-360T7-Build/releases)
 
+## 计划中
+支持自动检测上游代码变更，自动触发编译并上传固件
 
 ## 感谢
 hanwckf：https://github.com/hanwckf/immortalwrt-mt798x  
