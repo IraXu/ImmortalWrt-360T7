@@ -10,8 +10,10 @@
 # Description: OpenWrt DIY script part 1 (Before Update feeds)
 #
 
-# Uncomment a feed source
-#sed -i 's/^#\(.*helloworld\)/\1/' feeds.conf.default
+### Add feed sources
+sed -i '$a src-git-full small https://github.com/kenzok8/small-package' feeds.conf.default
+git clone https://github.com/CHN-beta/rkp-ipid package/rkp-ipid
+git clone https://github.com/Zxilly/UA2F package/UA2F
 
 ### 修改主题文件
 rm -rf package/lean/luci-theme-argon
