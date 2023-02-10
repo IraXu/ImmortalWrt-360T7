@@ -1,5 +1,7 @@
 # Actions-ImmortalWrt-360T7
 
+![immortalwrt](logo.png)
+
 ## 🤖关于此脚本与固件
 · 脚本内已中文备注，方便理解与自定义  
 
