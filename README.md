@@ -5,7 +5,7 @@
 
 · 固件默认开启：ZRAM、MWAN3  
 
-· 固件默认网关：192.168.6.1
+· 固件默认网关：192.168.10.1
 
 [![](https://img.shields.io/badge/编译状态-通过-brightgreen.svg)](https://github.com/IraXu/ImmortalWrt-360T7/actions)   [![](https://img.shields.io/badge/最新固件-下载-green.svg)](https://github.com/IraXu/ImmortalWrt-360T7/releases)
 
