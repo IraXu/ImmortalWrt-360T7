@@ -108,8 +108,8 @@ jobs:
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
          time=$(date +%Y.%m.%d)
-         release_tag="360T7-hanwckf-OpenWrt-mini-$time"
-         release_name="360T7-hanwckf-OpenWrt-mini"
+         release_tag="360T7-ImmortWrt-$time"
+         release_name="360T7-ImmortWrt-$time"
          echo "默认网关：192.168.10.1
          登录密码：password
          默认开启：mwan3" >> release.txt
