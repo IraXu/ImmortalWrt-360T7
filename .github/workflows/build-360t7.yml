@@ -93,8 +93,8 @@ jobs:
         rm -rf *kernel*
         rm -rf *.manifest
         rm -rf sha256sums
-        mv *sysupgrade.bin ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7-108M-sysupgrade.bin
-        mv *factory.bin ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7-108M-factory.bin
+        mv *sysupgrade.bin ${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-sysupgrade.bin
+        mv *factory.bin ${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-factory.bin
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
     - name: 上传固件到Github Action空间
