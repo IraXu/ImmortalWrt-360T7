@@ -1,10 +1,12 @@
 name: Build-360T7
 
 on:
+  repository_dispatch:
   workflow_dispatch:
     inputs:
-      manual:
-        description: '发起编译'
+      clean:
+         description: '清除ccache并编译'
+         default: 'false
 
 env:
   REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x
@@ -100,16 +102,20 @@ jobs:
       with:
         name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
         path: ${{ env.FIRMWARE }}
-
+        
     - name: 创建release标签
       id: tag
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        release_tag="${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7"
-        echo "编译时间：$(date +'%Y年%m月%d日 %H点%M分')" >> release.txt
-        echo "默认网关：192.168.6.1" >> release.txt
-        echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
-        echo "status=success" >> $GITHUB_OUTPUT
+         time=$(date +%Y.%m.%d)
+         release_tag="360T7-hanwckf-OpenWrt-mini-$time"
+         release_name="360T7-hanwckf-OpenWrt-mini"
+         echo "默认网关：192.168.10.1
+         登录密码：password
+         默认开启：mwan3" >> release.txt
+         echo "release_name=$release_name" >> $GITHUB_OUTPUT
+         echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
+         echo "status=success" >> $GITHUB_OUTPUT
         
     - name: 将固件上传到release
       uses: softprops/action-gh-release@v1
