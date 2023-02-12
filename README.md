@@ -5,7 +5,7 @@
 ## 🤖关于此脚本与固件
 - 脚本内已中文备注，方便理解与自定义  
 
-- .config文件自定义可参考[OpenWrt插件名称对照](https://www.right.com.cn/forum/thread-3682029-1-1.html) 
+- .config文件自定义可参考[OpenWrt插件名称对照](https://www.right.com.cn/forum/thread-344825-1-1.html) 
 
 - 固件默认开启：ZRAM、MWAN3、ACC 
 
