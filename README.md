@@ -5,6 +5,8 @@
 ## 🤖关于此脚本与固件
 - 脚本内已中文备注，方便理解与自定义  
 
+- 两种固件源码版本，分别来自于hanwckf & padavanonly  
+
 - .config文件自定义可参考[OpenWrt插件名称对照](https://www.right.com.cn/forum/thread-344825-1-1.html) 
 
 - 固件默认开启：ZRAM、MWAN3、ACC 
@@ -18,5 +20,6 @@
 
 ## ❤️感谢
 - hanwckf：https://github.com/hanwckf/immortalwrt-mt798x  
+- padavanonly：https://github.com/padavanonly/immortalwrtARM/tree/mt7981  
 - Actions-OpenWrt：https://github.com/P3TERX/Actions-OpenWrt  
 - Argon：https://github.com/jerrykuku/luci-theme-argon
