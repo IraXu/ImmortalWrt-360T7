@@ -39,18 +39,21 @@ jobs:
         sudo chown $USER:$GROUPS /workdir
         echo "FIRMWARE_VERSION=$(date +"%y%m%d")" >> $GITHUB_ENV
         echo "START_DATE=$(date +'%Y年%m月%d日 %H点%M分%S秒')" >> $GITHUB_ENV
+        
     - name: 下载源码
       working-directory: /workdir
       run: |
         df -hT $PWD
         git clone $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+        
     - name: 加载软件源
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
         chmod +x $DIY_P1_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
+        
     - name: 更新软件源
       run: cd openwrt && ./scripts/feeds update -a
 
@@ -64,6 +67,7 @@ jobs:
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
+        
     - name: 下载包
       id: package
       run: |
@@ -80,6 +84,7 @@ jobs:
         echo -e "$(nproc) thread compile"
         make -j$(nproc) || make -j1 || make -j1 V=s || (curl -k -d "title=OpenWrt-360T7固件编译失败" -d "content=编译固件版本：${{ env.FIRMWARE_VERSION }}%0A编译开始时间：${{ env.START_DATE }}%0A编译结束时间：$(date +'%Y年%m月%d日 %H点%M分%S秒')" -d "token=${{ env.PUSHPLUS_TOKEN }}&channel=cp&webhook=server" "http://www.pushplus.plus/send")
         echo "status=success" >> $GITHUB_OUTPUT
+        
     - name: 整理固件
       id: organize
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
@@ -97,6 +102,7 @@ jobs:
         mv *factory.bin ${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-factory.bin
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
+        
     - name: 上传固件到Github Action空间
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
@@ -113,7 +119,7 @@ jobs:
          release_name="360T7-ImmortalWrt-$time"
          echo "默认网关：192.168.10.1
          登录密码：none
-         默认开启：mwan3、acc" >> release.txt
+         默认配置：未开启ZRAM、安装MWAN3、安装ACC" >> release.txt
          echo "release_name=$release_name" >> $GITHUB_OUTPUT
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
