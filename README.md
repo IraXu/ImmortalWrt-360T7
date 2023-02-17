@@ -7,7 +7,7 @@
  
 - .config文件自定义可参考[OpenWrt插件名称对照](https://www.right.com.cn/forum/thread-344825-1-1.html) 
 
-- 固件默认开启：ZRAM、MWAN3、ACC 
+- 固件默认开启：MWAN3、ACC 
 
 - 固件默认网关：192.168.10.1
 
