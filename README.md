@@ -7,8 +7,6 @@
  
 - .config自定义可参考[OpenWrt插件名称对照](https://www.right.com.cn/forum/thread-344825-1-1.html) 
 
-- 固件默认开启：MWAN3、ACC 
-
 - 固件默认网关：192.168.10.1
 
 - [![](https://img.shields.io/badge/编译状态-通过-brightgreen.svg)](https://github.com/IraXu/ImmortalWrt-360T7/actions)   [![](https://img.shields.io/badge/最新固件-下载-green.svg)](https://github.com/IraXu/ImmortalWrt-360T7/releases)
