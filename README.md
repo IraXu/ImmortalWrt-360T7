@@ -1,10 +1,10 @@
-# Actions-ImmortalWrt-360T7
-
+# 为 360T7 云编译 ImmortalWrt
 ![immortalwrt](logo.png)
 
 ## 🤖关于固件
 
 - 默认网关：192.168.10.1
+- 两种源码版本 自行选择
 - 纯净版 无任何非必要插件
 
 ## ❤️感谢
