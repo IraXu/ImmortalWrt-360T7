@@ -1,4 +1,4 @@
-name: test
+name: pure-padavanonly-360t7
 
 on:
   repository_dispatch:
