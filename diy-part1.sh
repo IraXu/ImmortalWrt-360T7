@@ -13,4 +13,3 @@
 ### 添加第三方订阅源（这边建议编译后去更改成中科大的源）
 # sed -i '$a src-git-full small https://github.com/kenzok8/small-package' feeds.conf.default
 # git clone https://github.com/CHN-beta/rkp-ipid package/rkp-ipid
-git clone https://github.com/Zxilly/UA2F package/UA2F
