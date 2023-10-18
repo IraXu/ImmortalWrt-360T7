@@ -5,6 +5,7 @@
 
 - 默认网关：192.168.77.1
 - 纯净版 无任何非必要插件
+- hanwckf & padavanonly 两个版本，各位酌情自取
 
 ## ❤️感谢
 - hanwckf：https://github.com/hanwckf/immortalwrt-mt798x  
