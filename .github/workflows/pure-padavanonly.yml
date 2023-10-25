@@ -117,7 +117,8 @@ jobs:
          release_tag="360T7-padavanonly-openwrt-$time"
          release_name="360T7-padavanonly-openwrt-$time"
          echo "默认网关：192.168.77.1
-         登录密码：none" >> release.txt
+         登录密码：none
+         已配置好OpenClash所需依赖" >> release.txt
          echo "release_name=$release_name" >> $GITHUB_OUTPUT
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
