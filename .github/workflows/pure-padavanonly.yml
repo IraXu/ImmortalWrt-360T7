@@ -106,7 +106,7 @@ jobs:
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
-        name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
+        name: ${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7
         path: ${{ env.FIRMWARE }}
         
     - name: 创建release标签
@@ -114,8 +114,8 @@ jobs:
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
          time=$(date +%Y.%m.%d)
-         release_tag="360T7-padavanonly-openwrt-$time"
-         release_name="360T7-padavanonly-openwrt-$time"
+         release_tag="360T7-padavanonly-ImmortalWrt-$time"
+         release_name="360T7-padavanonly-ImmortalWrt-$time"
          echo "默认网关：192.168.77.1
          登录密码：none
          已配置好OpenClash所需依赖" >> release.txt
