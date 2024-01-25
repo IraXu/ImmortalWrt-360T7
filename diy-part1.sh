@@ -10,6 +10,6 @@
 # Description: OpenWrt DIY script part 1 (Before Update feeds)
 #
 
-### 添加第三方订阅源（这边建议编译后去更改成中科大的源）
-# sed -i '$a src-git-full small https://github.com/kenzok8/small-package' feeds.conf.default
-# git clone https://github.com/CHN-beta/rkp-ipid package/rkp-ipid
+### 添加第三方订阅源
+sed -i '$a src-git-full small https://github.com/kenzok8/small-package' feeds.conf.default
+git clone https://github.com/CHN-beta/rkp-ipid package/rkp-ipid
