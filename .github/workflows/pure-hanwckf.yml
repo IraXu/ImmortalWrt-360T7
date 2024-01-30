@@ -116,9 +116,11 @@ jobs:
          time=$(date +%Y.%m.%d)
          release_tag="360T7-hanwckf-ImmortalWrt-$time"
          release_name="360T7-hanwckf-ImmortalWrt-$time"
-         echo "默认网关：192.168.77.1
-         登录密码：none
-         已配置好OpenClash所需依赖">> release.txt
+         echo "跟进上游变更
+         默认网关：192.168.77.1
+         登录密码：--
+         内置构建了OpenClash，介意体积的请用2023.10.25版本
+         ">> release.txt
          echo "release_name=$release_name" >> $GITHUB_OUTPUT
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
