@@ -3,12 +3,15 @@
 
 ## 🤖关于固件
 
-- 默认网关：192.168.77.1
-- 纯净版 无任何非必要插件
-- hanwckf & padavanonly 两个版本，各位酌情自取
+  | 默认网关    | 默认用户     | 默认密码     |
+  | -------- | -------- | -------- |
+  | 192.168.77.1 | root | -- |
+
+- ~~纯净版 无任何非必要插件~~
+- 内置构建了OpenClash及其相关依赖
+- `hanwckf` & `padavanonly` 两个版本，各位酌情自取
 
 ## ❤️感谢
 - hanwckf：https://github.com/hanwckf/immortalwrt-mt798x  
 - padavanonly：https://github.com/padavanonly/immortalwrtARM  
-- Actions-OpenWrt：https://github.com/P3TERX/Actions-OpenWrt  
-- Argon：https://github.com/jerrykuku/luci-theme-argon
+- Actions-OpenWrt：https://github.com/P3TERX/Actions-OpenWrt
