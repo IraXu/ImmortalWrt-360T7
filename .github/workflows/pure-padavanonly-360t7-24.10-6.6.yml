@@ -26,7 +26,7 @@ jobs:
 
     steps:
     - name: 检查项目分支
-      uses: actions/checkout@v4
+      uses: actions/checkout@main
 
     - name: 初始化编译环境
       env:
@@ -54,6 +54,16 @@ jobs:
         chmod +x $DIY_P1_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: 修复无效的软件源配置 (自动跳过 small 源)
+      run: |
+        cd openwrt
+        # 检查：如果配置文件里有 'small' 但目录不存在，说明下载失败了，自动注释掉以防报错
+        if grep -q "small" feeds.conf.default && [ ! -d "feeds/small" ]; then
+            echo "::warning::检测到 'small' 源配置但目录缺失，正在自动注释该行..."
+            sed -i '/^[^#].*small/s/^/#/' feeds.conf.default
+            cat feeds.conf.default | grep small # 显示注释后的结果
+        fi
 
     - name: 更新软件源
       run: cd openwrt && ./scripts/feeds update -a
@@ -84,7 +94,6 @@ jobs:
         cd openwrt
         echo -e "========== 开始编译，使用 $(nproc) 线程 =========="
         
-        # 分级编译策略 + 正确状态判断
         if make -j$(nproc); then
           echo "✅ 编译成功 (多线程)"
           echo "status=success" >> $GITHUB_OUTPUT
@@ -97,17 +106,10 @@ jobs:
         else
           echo "❌ 编译失败！"
           echo "status=failed" >> $GITHUB_OUTPUT
-          # 发送 PushPlus 通知（需提前在 Secrets 配置 PUSHPLUS_TOKEN）
           if [ -n "${{ secrets.PUSHPLUS_TOKEN }}" ]; then
             curl -k -s -X POST "http://www.pushplus.plus/send" \
               -H "Content-Type: application/json" \
-              -d "{
-                \"token\": \"${{ secrets.PUSHPLUS_TOKEN }}\",
-                \"title\": \"OpenWrt-360T7 编译失败\",
-                \"content\": \"编译版本：${{ env.FIRMWARE_VERSION }}\n开始时间：${{ env.START_DATE }}\n结束时间: $(date +'%Y年%m月%d日 %H点%M分%S秒')\n请查看 Actions 日志排查\",
-                \"channel\": \"cp\",
-                \"webhook\": \"server\"
-              }" || true
+              -d "{\"token\": \"${{ secrets.PUSHPLUS_TOKEN }}\", \"title\": \"OpenWrt-360T7 编译失败\", \"content\": \"编译版本：${{ env.FIRMWARE_VERSION }}\n开始时间：${{ env.START_DATE }}\n结束时间: $(date +'%Y年%m月%d日 %H点%M分%S秒')\n请查看 Actions 日志排查\", \"channel\": \"cp\", \"webhook\": \"server\"}" || true
           fi
           exit 1
         fi
@@ -120,10 +122,8 @@ jobs:
         echo "📦 当前目录文件列表："
         ls -lah
         
-        # 删除不需要的文件
         rm -rf packages version.buildinfo profiles.json *rootfs* *kernel* *.manifest sha256sums
         
-        # 安全重命名固件（先检查文件是否存在）
         shopt -s nullglob
         sysupgrade_files=(*sysupgrade.bin)
         factory_files=(*factory.bin)
@@ -140,10 +140,9 @@ jobs:
           mv "${factory_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-factory.bin"
           echo "✅ 已重命名 factory 固件"
         else
-          echo "⚠️ 未找到 factory.bin 文件（部分设备可能不生成）"
+          echo "⚠️ 未找到 factory.bin 文件"
         fi
         
-        # 验证最终输出
         echo "📦 最终待上传文件："
         ls -lah *.bin 2>/dev/null || { echo "❌ 无固件文件可上传"; exit 1; }
         
@@ -151,7 +150,7 @@ jobs:
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 上传固件到 Github Action 空间
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
         name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
@@ -180,7 +179,7 @@ jobs:
         - OpenClash
         - eqos
         
-        > ⚠️ 刷写前请备份原固件，刷机有风险，操作需谨慎
+        > ⚠️ 刷写前请备份原固件
         EOF
         echo "release_name=$release_name" >> $GITHUB_OUTPUT
         echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
