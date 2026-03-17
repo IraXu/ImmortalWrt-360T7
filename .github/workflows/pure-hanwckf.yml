@@ -9,7 +9,7 @@ on:
          default: 'false'
 
 env:
-  REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x
+  REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x  
   REPO_BRANCH: openwrt-21.02
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: pure.config
@@ -61,6 +61,27 @@ jobs:
 
     - name: 安装软件源
       run: cd openwrt && ./scripts/feeds install -a
+
+    # ============ 新增步骤：禁用有问题的包 ============
+    - name: 禁用冲突插件（避免依赖错误）
+      run: |
+        cd openwrt
+        echo "🔧 禁用需要 firewall4 的插件，保留 openclash..."
+        
+        # 禁用需要 Firewall4/Rust 的插件（与 openclash 的 iptables 冲突）
+        for pkg in dns2socks-rust luci-app-fchomo luci-app-homeproxy momo nikki; do
+          if [ -d "package/feeds/small/$pkg" ]; then
+            echo "  📦 禁用: $pkg"
+            mv "package/feeds/small/$pkg" "package/feeds/small/$pkg.disabled" 2>/dev/null || true
+          fi
+        done
+        
+        # 确保 openclash 可用
+        if [ -d "package/feeds/small/luci-app-openclash" ]; then
+          echo "  ✅ 保留: luci-app-openclash"
+        fi
+        echo "✅ 插件冲突处理完成"
+    # ============ 新增步骤结束 ============
 
     - name: 加载自定义配置
       run: |
@@ -122,7 +143,7 @@ jobs:
          echo "跟进上游变更
          默认网关：192.168.77.1
          登录密码：--
-         内置构建了OpenClash、eqos">> release.txt
+         内置构建了OpenClash">> release.txt
          echo "release_name=$release_name" >> $GITHUB_OUTPUT
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
