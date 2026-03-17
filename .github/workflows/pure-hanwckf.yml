@@ -62,26 +62,33 @@ jobs:
     - name: 安装软件源
       run: cd openwrt && ./scripts/feeds install -a
 
-    # ============ 新增步骤：禁用有问题的包 ============
+    # ============ 替换为这个步骤 ============
     - name: 禁用冲突插件（避免依赖错误）
       run: |
         cd openwrt
-        echo "🔧 禁用需要 firewall4 的插件，保留 openclash..."
+        echo "🔧 彻底删除冲突插件，保留 openclash..."
         
-        # 禁用需要 Firewall4/Rust 的插件（与 openclash 的 iptables 冲突）
-        for pkg in dns2socks-rust luci-app-fchomo luci-app-homeproxy momo nikki; do
+        # 完全删除需要 Firewall4/Rust 的插件（不仅仅是重命名）
+        for pkg in dns2socks-rust luci-app-fchomo luci-app-homeproxy momo nikki luci-app-passwall2; do
           if [ -d "package/feeds/small/$pkg" ]; then
-            echo "  📦 禁用: $pkg"
-            mv "package/feeds/small/$pkg" "package/feeds/small/$pkg.disabled" 2>/dev/null || true
+            echo "  🗑️  删除: $pkg"
+            rm -rf "package/feeds/small/$pkg"
           fi
+        done
+        
+        # 同时也检查 feeds 其他目录
+        for pkg in dns2socks-rust luci-app-fchomo luci-app-homeproxy momo nikki luci-app-passwall2; do
+          find package/feeds -name "$pkg" -type d -exec rm -rf {} \; 2>/dev/null || true
         done
         
         # 确保 openclash 可用
         if [ -d "package/feeds/small/luci-app-openclash" ]; then
           echo "  ✅ 保留: luci-app-openclash"
+        else
+          echo "  ⚠️  警告: luci-app-openclash 未找到"
         fi
-        echo "✅ 插件冲突处理完成"
-    # ============ 新增步骤结束 ============
+        echo "✅ 冲突插件清理完成"
+    # ============ 步骤结束 ============
 
     - name: 加载自定义配置
       run: |
