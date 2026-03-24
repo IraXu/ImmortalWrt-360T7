@@ -143,6 +143,8 @@ CONFIG_PACKAGE_ebtables=y
 CONFIG_PACKAGE_ethtool=y
 CONFIG_PACKAGE_firewall4=y
 # CONFIG_PACKAGE_firewall is not set
+# CONFIG_PACKAGE_luci-app-fchomo is not set
+# CONFIG_PACKAGE_nikki is not set
 CONFIG_PACKAGE_htop=y
 CONFIG_PACKAGE_ip-bridge=y
 CONFIG_PACKAGE_ip6tables-extra=y
