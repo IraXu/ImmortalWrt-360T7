@@ -73,7 +73,7 @@ jobs:
       id: package
       run: |
         cd openwrt
-        # make defconfig # ← 可恶啊，终于定位到原因了，注释掉应该就不会再编译出错了
+        make defconfig
         make download -j16
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
