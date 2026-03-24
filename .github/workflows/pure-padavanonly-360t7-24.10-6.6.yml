@@ -64,10 +64,38 @@ jobs:
     - name: 加载自定义配置
       run: |
         [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        if [ -e $CONFIG_FILE ]; then
+          echo "✅ 找到配置文件: $CONFIG_FILE"
+          echo "📋 配置文件前10行："
+          head -10 $CONFIG_FILE
+          mv $CONFIG_FILE openwrt/.config
+        else
+          echo "❌ 未找到配置文件: $CONFIG_FILE"
+          ls -lah *.config || echo "当前目录无config文件"
+          exit 1
+        fi
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: 强制设置目标设备
+      run: |
+        cd openwrt
+        # 清除可能的错误配置
+        sed -i 's/CONFIG_TARGET_x86=y/# CONFIG_TARGET_x86 is not set/g' .config
+        sed -i 's/CONFIG_TARGET_x86_64=y/# CONFIG_TARGET_x86_64 is not set/g' .config
+        
+        # 确保正确的目标
+        echo "CONFIG_TARGET_mediatek=y" >> .config
+        echo "CONFIG_TARGET_mediatek_mt7981=y" >> .config
+        echo "CONFIG_TARGET_mediatek_mt7981_DEVICE_mt7981-360-t7-108M=y" >> .config
+        
+        # 重新生成配置
+        make defconfig
+        
+        # 显示配置摘要
+        echo "=== 目标配置 ==="
+        grep "CONFIG_TARGET.*mediatek.*mt7981" .config
 
     - name: 下载包
       id: package
@@ -112,40 +140,82 @@ jobs:
           exit 1
         fi
 
+    - name: 检查编译输出
+      run: |
+        cd openwrt/bin/targets/*/*
+        echo "=== 所有文件列表 ==="
+        ls -lah
+        echo ""
+        echo "=== 查找固件文件 ==="
+        find . -name "*.bin" -o -name "*.img*" | grep -v bl2 || echo "未找到固件文件"
+        echo ""
+        echo "=== 检查配置文件 ==="
+        grep "CONFIG_TARGET" ../../../.config | head -10
+
     - name: 整理固件
       id: organize
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        cd openwrt/bin/targets/*/*
-        echo "📦 当前目录文件列表："
+        cd openwrt/bin/targets
+        TARGET_DIR=$(find . -maxdepth 1 -type d | grep -E "mediatek" | head -1)
+        if [ -z "$TARGET_DIR" ]; then
+          echo "❌ 未找到 mediatek 目标目录"
+          ls -lah
+          exit 1
+        fi
+        cd "$TARGET_DIR"/*
+        
+        echo "📦 当前目录：$(pwd)"
         ls -lah
         
         # 删除不需要的文件
-        rm -rf packages version.buildinfo profiles.json *rootfs* *kernel* *.manifest sha256sums
+        rm -rf packages version.buildinfo profiles.json *rootfs* *kernel* *.manifest sha256sums config.buildinfo feeds.buildinfo
         
-        # 安全重命名固件（先检查文件是否存在）
+        # 智能识别固件类型
         shopt -s nullglob
-        sysupgrade_files=(*sysupgrade.bin)
-        factory_files=(*factory.bin)
-        shopt -u nullglob
         
+        # 尝试查找 sysupgrade.bin（mediatek/多数路由器）
+        sysupgrade_files=(*sysupgrade.bin)
+        # 尝试查找 combined.img.gz（x86）
+        combined_files=(*combined*.img.gz)
+        # 尝试查找 ext4.img.gz
+        ext4_files=(*ext4*.img.gz)
+        # 尝试查找 any .bin files (excluding bl2)
+        bin_files=($(find . -maxdepth 1 -name "*.bin" ! -name "*bl2*" ! -name "*rootfs*" ! -name "*kernel*" | head -5))
+        
+        echo "📋 找到的文件类型："
+        echo "  sysupgrade: ${#sysupgrade_files[@]}"
+        echo "  combined: ${#combined_files[@]}"
+        echo "  ext4: ${#ext4_files[@]}"
+        echo "  other bin: ${#bin_files[@]}"
+        
+        # 重命名固件
         if [ ${#sysupgrade_files[@]} -ge 1 ]; then
           mv "${sysupgrade_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-sysupgrade.bin"
           echo "✅ 已重命名 sysupgrade 固件"
+        elif [ ${#combined_files[@]} -ge 1 ]; then
+          mv "${combined_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-combined.img.gz"
+          echo "✅ 已重命名 combined 固件"
+        elif [ ${#ext4_files[@]} -ge 1 ]; then
+          mv "${ext4_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-ext4.img.gz"
+          echo "✅ 已重命名 ext4 固件"
+        elif [ ${#bin_files[@]} -ge 1 ]; then
+          # 如果有其他 bin 文件，尝试使用
+          cp "${bin_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7.bin"
+          echo "✅ 已复制其他 bin 固件"
         else
-          echo "⚠️ 未找到 sysupgrade.bin 文件"
+          echo "❌ 未找到可识别的固件文件"
+          echo "📋 目录内容："
+          ls -lah
+          find . -type f -name "*.bin" -o -name "*.img*"
+          exit 1
         fi
         
-        if [ ${#factory_files[@]} -ge 1 ]; then
-          mv "${factory_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-factory.bin"
-          echo "✅ 已重命名 factory 固件"
-        else
-          echo "⚠️ 未找到 factory.bin 文件（部分设备可能不生成）"
-        fi
+        shopt -u nullglob
         
         # 验证最终输出
         echo "📦 最终待上传文件："
-        ls -lah *.bin 2>/dev/null || { echo "❌ 无固件文件可上传"; exit 1; }
+        ls -lah *.bin *.img.gz 2>/dev/null || true
         
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
@@ -197,6 +267,7 @@ jobs:
         files: |
           ${{ env.FIRMWARE }}/*sysupgrade.bin
           ${{ env.FIRMWARE }}/*factory.bin
+          ${{ env.FIRMWARE }}/*.img.gz
         draft: false
         prerelease: false
 
