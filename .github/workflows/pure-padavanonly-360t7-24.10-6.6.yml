@@ -1,292 +1,207 @@
 name: pure-padavanonly-360t7-24.10-6.6
 
-on:
-  repository_dispatch:
-  workflow_dispatch:
-    inputs:
-      clean:
-        description: 'clean ccache'
-        default: 'false'
-        required: false
-
+# ==================== 环境变量配置 ====================
 env:
-  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
+  # 源码仓库地址 (ImmortalWrt MT798x 6.6内核分支)
+  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
   REPO_BRANCH: openwrt-24.10-6.6
   FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: 6.6_pure.config
+  CONFIG_FILE: 360t7.config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
+  # 是否上传 bin 目录到 Actions 产物
+  UPLOAD_BIN_DIR: true
+  # 是否上传固件到 Actions 产物
   UPLOAD_FIRMWARE: true
+  # 是否上传到奶牛快传
+  UPLOAD_COWTRANSFER: false
+  # 是否上传到 WeTransfer
+  UPLOAD_WETRANSFER: false
+  # 是否发布到 GitHub Releases
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
 
+
+on:
+  # 手动通过 API 触发 (可用于外部系统调用)
+  repository_dispatch:
+  # 手动点击按钮触发 (支持传入参数)
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: '启用 SSH 远程连接调试'
+        required: false
+        default: 'false'
+
+
+# ==================== 编译任务定义 ====================
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
-      - name: 检查项目分支
-        uses: actions/checkout@main
+    # [1] 检出仓库代码
+    - name: 检出源码
+      uses: actions/checkout@main
 
-      - name: 初始化编译环境
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo -E apt-get -qq update
-          sudo -E apt-get -qq install build-essential gawk gcc-multilib g++-multilib gettext libncurses-dev python3-distutils zlib1g-dev
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
-          export TZ="${{ env.TZ }}"
-          sudo mkdir -p /workdir
-          sudo chown $USER:$GROUPS /workdir
-          echo "FIRMWARE_VERSION=$(date +%y%m%d)" >> $GITHUB_ENV
-          echo "START_DATE=$(date +'%Y年%m月%d日 %H点%M分%S秒')" >> $GITHUB_ENV
+    # [2] 清理磁盘空间 (释放约6GB，避免编译时空间不足)
+    - name: 释放磁盘空间 (Ubuntu)
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: true
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
 
-      - name: 下载源码
-        run: |
-          df -hT $GITHUB_WORKSPACE
-          git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+    # [3] 初始化编译环境 (安装依赖包 + 配置时区)
+    - name: 初始化编译环境
+      env:
+        DEBIAN_FRONTEND: noninteractive  # 避免交互式提示阻断安装
+      run: |
+        sudo timedatectl set-timezone "$TZ"
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo apt-mark hold grub-efi-amd64-signed
+        sudo apt update -y
+        sudo apt full-upgrade -y
+        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
 
-      - name: 加载软件源
-        run: |
-          [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-          chmod +x $DIY_P1_SH
-          cd openwrt
-          $GITHUB_WORKSPACE/$DIY_P1_SH
+    # [4] 克隆 OpenWrt 源码
+    - name: 克隆源码仓库
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH --single-branch openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: 更新软件源
-        run: |
-          cd openwrt && ./scripts/feeds update -a
+    # [5] 加载自定义 feeds 配置 (替换默认源)
+    - name: 加载自定义 feeds 配置
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
 
-      - name: 安装软件源
-        run: |
-          cd openwrt && ./scripts/feeds install -a
+    # [6] 更新 feeds (下载最新软件包索引)
+    - name: 更新 feeds 索引
+      run: cd openwrt && ./scripts/feeds update -a
 
-      - name: 加载自定义配置
-        run: |
-          [ -e files ] && mv files openwrt/files
-          if [ -e $CONFIG_FILE ]; then
-            echo "✅ 找到配置文件：$CONFIG_FILE"
-            echo "📋 配置文件前 10 行："
-            head -10 $CONFIG_FILE
-            mv $CONFIG_FILE openwrt/.config
-          else
-            echo "❌ 未找到配置文件：$CONFIG_FILE"
-            ls -lah *.config || echo "当前目录无 config 文件"
-            exit 1
-          fi
-          chmod +x $DIY_P2_SH
-          cd openwrt
-          $GITHUB_WORKSPACE/$DIY_P2_SH
+    # [7] 安装 feeds (将软件包注册到编译系统)
+    - name: 安装 feeds 软件包
+      run: cd openwrt && ./scripts/feeds install -a
 
-      - name: 强制设置目标设备
-        run: |
-          cd openwrt
-          # 清除可能的错误配置
-          sed -i 's/CONFIG_TARGET_x86=y/# CONFIG_TARGET_x86 is not set/g' .config
-          sed -i 's/CONFIG_TARGET_x86_64=y/# CONFIG_TARGET_x86_64 is not set/g' .config
-          
-          # 关闭签名检查，防止 usign 缺失导致编译失败 (修复核心报错)
-          echo "CONFIG_SIGNATURE_CHECK=n" >> .config
-          
-          # 确保正确的目标
-          echo "CONFIG_TARGET_mediatek=y" >> .config
-          echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
-          echo "CONFIG_TARGET_MULTI_PROFILE=y" >> .config
-          echo "CONFIG_TARGET_mediatek_mt7981_DEVICE_mt7981-360-t7-108M=y" >> .config
-          
-          # 重新生成配置
-          make defconfig
-          
-          # 显示配置摘要
-          echo "=== 目标配置 ==="
-          grep "CONFIG_TARGET.*mediatek.*filogic\|CONFIG_TARGET.*mt7981" .config | head -20
+    # [8] 加载自定义配置 (.config + files 目录)
+    - name: 加载自定义编译配置
+      run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
 
-      - name: 下载包
-        id: package
-        run: |
-          cd openwrt
-          make defconfig
-          make download -j16
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
+    # [9] SSH 远程调试 (可选：用于排查编译问题)
+    - name: ⚙️ SSH 远程连接调试 (可选)
+      uses: mxschmitt/action-tmate@v3  # 使用 tmate 提供临时 SSH 访问
+      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
+      # 如需推送通知到 Telegram，可取消下方注释并配置 secrets
+      #env:
+      #  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      #  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-      - name: 编译固件
-        id: compile
-        run: |
-          cd openwrt
-          echo -e "========== 开始编译，使用 $(nproc) 线程 =========="
-          
-          # 分级编译策略 + 正确状态判断
-          if make -j$(nproc); then
-            echo "✅ 编译成功 (多线程)"
-            echo "status=success" >> $GITHUB_OUTPUT
-          elif make -j1; then
-            echo "✅ 编译成功 (单线程)"
-            echo "status=success" >> $GITHUB_OUTPUT
-          elif make -j1 V=s; then
-            echo "✅ 编译成功 (单线程 + 详细日志)"
-            echo "status=success" >> $GITHUB_OUTPUT
-          else
-            echo "❌ 编译失败！"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            # 发送 PushPlus 通知（需提前在 Secrets 配置 PUSHPLUS_TOKEN）
-            if [ -n "${{ secrets.PUSHPLUS_TOKEN }}" ]; then
-              curl -k -s -X POST "http://www.pushplus.plus/send" \
-                -H "Content-Type: application/json" \
-                -d "{
-                  \"token\": \"${{ secrets.PUSHPLUS_TOKEN }}\",
-                  \"title\": \"OpenWrt-360T7 编译失败\",
-                  \"content\": \"编译版本：${{ env.FIRMWARE_VERSION }}\n开始时间：${{ env.START_DATE }}\n结束时间：$(date +'%Y年%m月%d日 %H点%M分%S秒')\n请查看 Actions 日志排查\",
-                  \"channel\": \"cp\",
-                  \"webhook\": \"server\"
-                }" || true
-            fi
-            exit 1
-          fi
+    # [10] 预下载软件包 (避免编译时因网络问题失败)
+    - name: 预下载软件包
+      id: package
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
 
-      - name: 检查编译输出
-        run: |
-          cd openwrt/bin/targets/*/*
-          echo "=== 所有文件列表 ==="
-          ls -lah
-          echo ""
-          echo "=== 查找固件文件 ==="
-          find . -name "*.bin" -o -name "*.img*" | grep -v bl2 || echo "未找到固件文件"
-          echo ""
-          echo "=== 检查配置文件 ==="
-          grep "CONFIG_TARGET" ../../../.config | head -10
+    # [11] 编译固件 (核心步骤)
+    - name: 编译固件
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-      - name: 整理固件
-        id: organize
-        if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-        run: |
-          cd openwrt/bin/targets
-          TARGET_DIR=$(find . -maxdepth 1 -type d | grep -E "mediatek" | head -1)
-          if [ -z "$TARGET_DIR" ]; then
-            echo "❌ 未找到 mediatek 目标目录"
-            ls -lah
-            exit 1
-          fi
-          cd "$TARGET_DIR"/*
-          
-          echo "📦 当前目录：$(pwd)"
-          ls -lah
-          
-          # 删除不需要的文件
-          rm -rf packages version.buildinfo profiles.json *rootfs* *kernel* *.manifest sha256sums config.buildinfo feeds.buildinfo
-          
-          # 智能识别固件类型
-          shopt -s nullglob
-          
-          # 尝试查找 sysupgrade.bin（mediatek/多数路由器）
-          sysupgrade_files=(*sysupgrade.bin)
-          # 尝试查找 combined.img.gz（x86）
-          combined_files=(*combined*.img.gz)
-          # 尝试查找 ext4.img.gz
-          ext4_files=(*ext4*.img.gz)
-          # 尝试查找 any .bin files (excluding bl2)
-          mapfile -t bin_files < <(find . -maxdepth 1 -name "*.bin" ! -name "*bl2*" ! -name "*rootfs*" ! -name "*kernel*" | head -5)
-          
-          echo "📋 找到的文件类型："
-          echo "  sysupgrade: ${#sysupgrade_files[@]}"
-          echo "  combined: ${#combined_files[@]}"
-          echo "  ext4: ${#ext4_files[@]}"
-          echo "  other bin: ${#bin_files[@]}"
-          
-          # 重命名固件
-          if [ ${#sysupgrade_files[@]} -ge 1 ]; then
-            mv "${sysupgrade_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-sysupgrade.bin"
-            echo "✅ 已重命名 sysupgrade 固件"
-          elif [ ${#combined_files[@]} -ge 1 ]; then
-            mv "${combined_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-combined.img.gz"
-            echo "✅ 已重命名 combined 固件"
-          elif [ ${#ext4_files[@]} -ge 1 ]; then
-            mv "${ext4_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-ext4.img.gz"
-            echo "✅ 已重命名 ext4 固件"
-          elif [ ${#bin_files[@]} -ge 1 ]; then
-            # 如果有其他 bin 文件，尝试使用
-            cp "${bin_files[0]}" "${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7.bin"
-            echo "✅ 已复制其他 bin 固件"
-          else
-            echo "❌ 未找到可识别的固件文件"
-            echo "📋 目录内容："
-            ls -lah
-            find . -type f -name "*.bin" -o -name "*.img*"
-            exit 1
-          fi
-          
-          shopt -u nullglob
-          
-          # 验证最终输出
-          echo "📦 最终待上传文件："
-          ls -lah *.bin *.img.gz 2>/dev/null || true
-          
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-          echo "status=success" >> $GITHUB_OUTPUT
+    # [12] 检查磁盘使用情况 (调试用)
+    - name: 检查磁盘空间使用
+      if: (!cancelled())
+      run: df -hT
 
-      - name: 上传固件到 Github Action 空间
-        uses: actions/upload-artifact@main
-        if: steps.organize.outputs.status == 'success' && !cancelled()
-        with:
-          name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
-          path: ${{ env.FIRMWARE }}/*.bin
-          retention-days: 7
+    # [13] 上传 bin 目录到 Actions 产物 (含所有中间文件)
+    - name: 上传 bin 目录 (Actions 产物)
+      uses: actions/upload-artifact@main
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: openwrt/bin
 
-      - name: 创建 release 标签
-        id: tag
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-        run: |
-          time=$(date +%Y.%m.%d)
-          release_tag="360T7-24.10-6.6-ImmortalWrt-$time"
-          release_name="360T7-24.10-6.6-ImmortalWrt-$time"
-          cat > release.txt << EOF
-          ## 📦 ImmortalWrt for 360T7
-          
-          - 源码分支：${{ env.REPO_BRANCH }}
-          - 编译时间：${{ env.START_DATE }}
-          - 固件版本：${{ env.FIRMWARE_VERSION }}
-          
-          ### 🔧 默认信息
-          - 默认网关：192.168.77.1
-          - 登录密码：无（首次登录请设置）
-          
-          ### 📦 内置组件
-          - OpenClash
-          
-          > ⚠️ 刷写前请备份原固件，刷机有风险，操作需谨慎
-          EOF
-          echo "release_name=$release_name" >> $GITHUB_OUTPUT
-          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
-          echo "status=success" >> $GITHUB_OUTPUT
+    # [14] 整理固件文件 (移除 packages 目录，只保留固件)
+    - name: 整理固件文件
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: 将固件上传到 release
-        uses: softprops/action-gh-release@v1
-        if: steps.tag.outputs.status == 'success' && !cancelled()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          name: ${{ steps.tag.outputs.release_name }}
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          body_path: release.txt
-          files: |
-            ${{ env.FIRMWARE }}/*sysupgrade.bin
-            ${{ env.FIRMWARE }}/*factory.bin
-            ${{ env.FIRMWARE }}/*.img.gz
-          draft: false
-          prerelease: false
+    # [15] 上传固件到 Actions 产物
+    - name: 上传固件 (Actions 产物)
+      uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
 
-      - name: 删除旧的工作流运行记录
-        uses: GitRML/delete-workflow-runs@main
-        with:
-          retain_days: 1
-          keep_minimum_runs: 3
+    # [16] 生成 Release 标签
+    - name: 生成 Release 标签
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+        touch release.txt
+        # 如果启用了奶牛快传，添加下载链接到 Release 说明
+        [ $UPLOAD_COWTRANSFER = true ] && echo "🔗 [奶牛快传下载](${{ steps.cowtransfer.outputs.url }})" >> release.txt
+        # 如果启用了 WeTransfer，添加下载链接到 Release 说明
+        [ $UPLOAD_WETRANSFER = true ] && echo "🔗 [WeTransfer 下载](${{ steps.wetransfer.outputs.url }})" >> release.txt
+        echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: 删除旧的 releases
-        uses: dev-drprasad/delete-older-releases@v0.2.1
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-        with:
-          keep_latest: 10
-          delete_tags: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # [19] 发布固件到 GitHub Releases
+    - name: 发布固件到 GitHub Releases
+      uses: softprops/action-gh-release@v1
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: ${{ env.FIRMWARE }}/*
+
+    # [20] 清理旧的工作流运行记录 (保留最近10次，其余1天后删除)
+    - name: 清理旧的工作流记录
+      uses: GitRML/delete-workflow-runs@main
+      with:
+        retain_days: 1
+        keep_minimum_runs: 10
+
+    # [21] 清理旧的 Releases (仅保留最新10个)
+    - name: 清理旧的 Releases
+      uses: dev-drprasad/delete-older-releases@v0.2.1
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 10
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
