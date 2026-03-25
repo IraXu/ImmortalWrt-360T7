@@ -56,25 +56,23 @@ jobs:
 
       - name: 更新软件源
         run: |
-          cd openwrt
-          ./scripts/feeds update -a
+          cd openwrt && ./scripts/feeds update -a
 
       - name: 安装软件源
         run: |
-          cd openwrt
-          ./scripts/feeds install -a
+          cd openwrt && ./scripts/feeds install -a
 
       - name: 加载自定义配置
         run: |
           [ -e files ] && mv files openwrt/files
           if [ -e $CONFIG_FILE ]; then
-            echo "✅ 找到配置文件: $CONFIG_FILE"
-            echo "📋 配置文件前10行："
+            echo "✅ 找到配置文件：$CONFIG_FILE"
+            echo "📋 配置文件前 10 行："
             head -10 $CONFIG_FILE
             mv $CONFIG_FILE openwrt/.config
           else
-            echo "❌ 未找到配置文件: $CONFIG_FILE"
-            ls -lah *.config || echo "当前目录无config文件"
+            echo "❌ 未找到配置文件：$CONFIG_FILE"
+            ls -lah *.config || echo "当前目录无 config 文件"
             exit 1
           fi
           chmod +x $DIY_P2_SH
@@ -84,9 +82,12 @@ jobs:
       - name: 强制设置目标设备
         run: |
           cd openwrt
-          # 修改现有配置而不是覆盖
-          sed -i 's/CONFIG_TARGET_.*=y/# \0/g' .config
-          sed -i 's/CONFIG_TARGET_.*=m/# \0/g' .config
+          # 清除可能的错误配置
+          sed -i 's/CONFIG_TARGET_x86=y/# CONFIG_TARGET_x86 is not set/g' .config
+          sed -i 's/CONFIG_TARGET_x86_64=y/# CONFIG_TARGET_x86_64 is not set/g' .config
+          
+          # 关闭签名检查，防止 usign 缺失导致编译失败 (修复核心报错)
+          echo "CONFIG_SIGNATURE_CHECK=n" >> .config
           
           # 确保正确的目标
           echo "CONFIG_TARGET_mediatek=y" >> .config
@@ -124,7 +125,7 @@ jobs:
             echo "✅ 编译成功 (单线程)"
             echo "status=success" >> $GITHUB_OUTPUT
           elif make -j1 V=s; then
-            echo "✅ 编译成功 (单线程+详细日志)"
+            echo "✅ 编译成功 (单线程 + 详细日志)"
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "❌ 编译失败！"
@@ -136,7 +137,7 @@ jobs:
                 -d "{
                   \"token\": \"${{ secrets.PUSHPLUS_TOKEN }}\",
                   \"title\": \"OpenWrt-360T7 编译失败\",
-                  \"content\": \"编译版本：${{ env.FIRMWARE_VERSION }}\n开始时间：${{ env.START_DATE }}\n结束时间: $(date +'%Y年%m月%d日 %H点%M分%S秒')\n请查看 Actions 日志排查\",
+                  \"content\": \"编译版本：${{ env.FIRMWARE_VERSION }}\n开始时间：${{ env.START_DATE }}\n结束时间：$(date +'%Y年%m月%d日 %H点%M分%S秒')\n请查看 Actions 日志排查\",
                   \"channel\": \"cp\",
                   \"webhook\": \"server\"
                 }" || true
