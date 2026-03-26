@@ -2,7 +2,6 @@ name: pure-padavanonly-360t7-24.10-6.6
 
 # ==================== 环境变量配置 ====================
 env:
-  # 源码仓库地址 (ImmortalWrt MT798x 6.6内核分支)
   REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
   REPO_BRANCH: openwrt-24.10-6.6
   FEEDS_CONF: feeds.conf.default
@@ -170,15 +169,17 @@ jobs:
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
-        # 如果启用了奶牛快传，添加下载链接到 Release 说明
-        [ $UPLOAD_COWTRANSFER = true ] && echo "🔗 [奶牛快传下载](${{ steps.cowtransfer.outputs.url }})" >> release.txt
-        # 如果启用了 WeTransfer，添加下载链接到 Release 说明
-        [ $UPLOAD_WETRANSFER = true ] && echo "🔗 [WeTransfer 下载](${{ steps.wetransfer.outputs.url }})" >> release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
+         time=$(date +%Y.%m.%d)
+         release_tag="360T7-ImmortalWrt-2410-$time"
+         release_name="360T7-ImmortalWrt-2410-$time"
+         echo "默认网关：192.168.77.1
+         登录密码：--
+         内置构建了Nikki">> release.txt
+         echo "release_name=$release_name" >> $GITHUB_OUTPUT
+         echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
+         echo "status=success" >> $GITHUB_OUTPUT
 
-    # [19] 发布固件到 GitHub Releases
+    # [17] 发布固件到 GitHub Releases
     - name: 发布固件到 GitHub Releases
       uses: softprops/action-gh-release@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
@@ -189,14 +190,14 @@ jobs:
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
-    # [20] 清理旧的工作流运行记录 (保留最近10次，其余1天后删除)
+    # [18] 清理旧的工作流运行记录 (保留最近10次，其余1天后删除)
     - name: 清理旧的工作流记录
       uses: GitRML/delete-workflow-runs@main
       with:
         retain_days: 1
         keep_minimum_runs: 10
 
-    # [21] 清理旧的 Releases (仅保留最新10个)
+    # [19] 清理旧的 Releases (仅保留最新10个)
     - name: 清理旧的 Releases
       uses: dev-drprasad/delete-older-releases@v0.2.1
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
