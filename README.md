@@ -23,7 +23,8 @@ ImmortalWrt-360T7/
   | 192.168.77.1 | root | -- |
 
 
-- 内置构建了OpenClash及其相关依赖
+- hanwckf版内置构建了OpenClash及其相关依赖
+- padavanonly24.10版内置构建Nikki及其相关依赖
 - `hanwckf` & `padavanonly` 多版本（含24.10），各位酌情自取  
 - 亦欢迎 Frok & Star
 
