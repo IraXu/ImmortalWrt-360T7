@@ -172,9 +172,15 @@ jobs:
          time=$(date +%Y.%m.%d)
          release_tag="360T7-ImmortalWrt-2410-$time"
          release_name="360T7-ImmortalWrt-2410-$time"
-         echo "默认网关：192.168.77.1
-         登录密码：--
-         内置构建了Nikki">> release.txt
+         echo "========================================" >> release.txt
+         echo "  360T7 ImmortalWrt 固件构建成功" >> release.txt
+         echo "========================================" >> release.txt
+         echo "📅 构建日期：$time" >> release.txt
+         echo "🌐 默认网关：192.168.77.1" >> release.txt
+         echo "🔑 登录密码：无 (空)" >> release.txt
+         echo "🔧 内置组件：Nikki" >> release.txt
+         echo "========================================" >> release.txt
+         echo "⚠️ 提示：首次登录请修改默认密码" >> release.txt         
          echo "release_name=$release_name" >> $GITHUB_OUTPUT
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
