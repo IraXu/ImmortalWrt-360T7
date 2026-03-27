@@ -1,5 +1,14 @@
 name: pure-padavanonly-360t7-24.10-6.6
 
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      clean:
+         description: '是否清理ccache'
+         default: 'false'
+
+
 # ==================== 环境变量配置 ====================
 env:
   REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
@@ -8,32 +17,22 @@ env:
   CONFIG_FILE: 6.6_pure.config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
-  # 是否上传固件到 Actions 产物
   UPLOAD_FIRMWARE: true
-  # 是否发布到 GitHub Releases
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
-
-on:
-  # 手动通过 API 触发
-  repository_dispatch:
-  # 手动点击按钮触发
-  workflow_dispatch:
 
 # ==================== 编译任务定义 ====================
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # 增加超时时间，避免大编译任务被强制终止
-    timeout-minutes: 360
 
     steps:
     # [1] 检出仓库代码
-    - name: 检出源码
+    - name: 检出项目分支源码
       uses: actions/checkout@main
 
     # [2] 清理磁盘空间
-    - name: 释放磁盘空间 (Ubuntu)
+    - name: 释放编译环境磁盘空间 (Ubuntu)
       uses: jlumbroso/free-disk-space@main
       with:
         tool-cache: true
@@ -58,8 +57,8 @@ jobs:
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
-    # [4] 克隆 OpenWrt 源码
-    - name: 克隆源码仓库
+    # [4] 克隆ImmortalWrt源码
+    - name: 克隆 ImmortalWrt 源码仓库
       working-directory: /workdir
       run: |
         df -hT $PWD
@@ -91,21 +90,7 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    # [9] 缓存编译依赖 (编译加速用)
-    - name: 缓存 ccache / dl / staging_dir
-      uses: actions/cache@v4
-      with:
-        path: |
-          openwrt/.ccache
-          openwrt/dl
-          openwrt/staging_dir/host
-          openwrt/staging_dir/hostpkg
-        key: ${{ runner.os }}-mt798x-6.6-${{ hashFiles('openwrt/.config', 'feeds.conf.default') }}
-        restore-keys: |
-          ${{ runner.os }}-mt798x-6.6-
-          ${{ runner.os }}-mt798x-
-
-    # [10] 预下载软件包
+    # [9] 预下载软件包
     - name: 预下载软件包
       id: package
       run: |
@@ -115,7 +100,7 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    # [11] 编译固件（启用 ccache + 优化并行）
+    # [10] 编译固件（启用 ccache + 优化并行）
     - name: 编译固件
       id: compile
       run: |
@@ -143,12 +128,12 @@ jobs:
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    # [12] 检查磁盘使用情况
+    # [11] 检查磁盘使用情况
     - name: 检查磁盘空间使用
       if: (!cancelled())
       run: df -hT
 
-    # [13] 整理固件文件
+    # [12] 整理固件文件
     - name: 整理固件文件
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
@@ -158,7 +143,7 @@ jobs:
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    # [14] 上传固件到 Actions 产物
+    # [13] 上传固件到 Actions 产物
     - name: 上传固件 (Actions 产物)
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
@@ -166,7 +151,7 @@ jobs:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    # [15] 生成 Release 标签
+    # [14] 生成 Release 标签
     - name: 生成 Release 标签
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
@@ -190,7 +175,7 @@ jobs:
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
 
-    # [16] 发布固件到 GitHub Releases
+    # [15] 发布固件到 GitHub Releases
     - name: 发布固件到 GitHub Releases
       uses: softprops/action-gh-release@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
@@ -201,14 +186,14 @@ jobs:
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
-    # [17] 清理旧的工作流运行记录
+    # [16] 清理旧的工作流运行记录
     - name: 清理旧的工作流记录
       uses: GitRML/delete-workflow-runs@main
       with:
         retain_days: 1
         keep_minimum_runs: 10
 
-    # [18] 清理旧的 Releases
+    # [17] 清理旧的 Releases
     - name: 清理旧的 Releases
       uses: dev-drprasad/delete-older-releases@v0.2.1
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
