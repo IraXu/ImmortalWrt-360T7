@@ -8,42 +8,31 @@ env:
   CONFIG_FILE: 6.6_pure.config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
-  # 是否上传 bin 目录到 Actions 产物
-  UPLOAD_BIN_DIR: true
   # 是否上传固件到 Actions 产物
   UPLOAD_FIRMWARE: true
-  # 是否上传到奶牛快传
-  UPLOAD_COWTRANSFER: false
-  # 是否上传到 WeTransfer
-  UPLOAD_WETRANSFER: false
   # 是否发布到 GitHub Releases
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
 
-
 on:
-  # 手动通过 API 触发 (可用于外部系统调用)
+  # 手动通过 API 触发
   repository_dispatch:
-  # 手动点击按钮触发 (支持传入参数)
+  # 手动点击按钮触发
   workflow_dispatch:
-    inputs:
-      ssh:
-        description: '启用 SSH 远程连接调试'
-        required: false
-        default: 'false'
-
 
 # ==================== 编译任务定义 ====================
 jobs:
   build:
     runs-on: ubuntu-22.04
+    # 增加超时时间，避免大编译任务被强制终止
+    timeout-minutes: 360
 
     steps:
     # [1] 检出仓库代码
     - name: 检出源码
       uses: actions/checkout@main
 
-    # [2] 清理磁盘空间 (释放约6GB，避免编译时空间不足)
+    # [2] 清理磁盘空间
     - name: 释放磁盘空间 (Ubuntu)
       uses: jlumbroso/free-disk-space@main
       with:
@@ -55,17 +44,17 @@ jobs:
         docker-images: true
         swap-storage: true
 
-    # [3] 初始化编译环境 (安装依赖包 + 配置时区)
+    # [3] 初始化编译环境
     - name: 初始化编译环境
       env:
-        DEBIAN_FRONTEND: noninteractive  # 避免交互式提示阻断安装
+        DEBIAN_FRONTEND: noninteractive
       run: |
         sudo timedatectl set-timezone "$TZ"
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo apt-mark hold grub-efi-amd64-signed
         sudo apt update -y
         sudo apt full-upgrade -y
-        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
@@ -74,10 +63,10 @@ jobs:
       working-directory: /workdir
       run: |
         df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH --single-branch openwrt
+        git clone $REPO_URL -b $REPO_BRANCH --single-branch --depth 1 openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    # [5] 加载自定义 feeds 配置 (替换默认源)
+    # [5] 加载自定义 feeds 配置
     - name: 加载自定义 feeds 配置
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
@@ -85,15 +74,15 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
 
-    # [6] 更新 feeds (下载最新软件包索引)
+    # [6] 更新 feeds 索引
     - name: 更新 feeds 索引
       run: cd openwrt && ./scripts/feeds update -a
 
-    # [7] 安装 feeds (将软件包注册到编译系统)
+    # [7] 安装 feeds 软件包
     - name: 安装 feeds 软件包
       run: cd openwrt && ./scripts/feeds install -a
 
-    # [8] 加载自定义配置 (.config + files 目录)
+    # [8] 加载自定义编译配置
     - name: 加载自定义编译配置
       run: |
         [ -e files ] && mv files openwrt/files
@@ -102,16 +91,21 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    # [9] SSH 远程调试 (可选：用于排查编译问题)
-    - name: ⚙️ SSH 远程连接调试 (可选)
-      uses: mxschmitt/action-tmate@v3  # 使用 tmate 提供临时 SSH 访问
-      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
-      # 如需推送通知到 Telegram，可取消下方注释并配置 secrets
-      #env:
-      #  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      #  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    # [9] 缓存编译依赖 (编译加速用)
+    - name: 缓存 ccache / dl / staging_dir
+      uses: actions/cache@v4
+      with:
+        path: |
+          openwrt/.ccache
+          openwrt/dl
+          openwrt/staging_dir/host
+          openwrt/staging_dir/hostpkg
+        key: ${{ runner.os }}-mt798x-6.6-${{ hashFiles('openwrt/.config', 'feeds.conf.default') }}
+        restore-keys: |
+          ${{ runner.os }}-mt798x-6.6-
+          ${{ runner.os }}-mt798x-
 
-    # [10] 预下载软件包 (避免编译时因网络问题失败)
+    # [10] 预下载软件包
     - name: 预下载软件包
       id: package
       run: |
@@ -121,32 +115,40 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    # [11] 编译固件 (核心步骤)
+    # [11] 编译固件（启用 ccache + 优化并行）
     - name: 编译固件
       id: compile
       run: |
         cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        # 启用 ccache
+        export USE_CCACHE=1
+        export CCACHE_DIR="$PWD/.ccache"
+        export CCACHE_COMPILERCHECK=content
+        export CCACHE_COMPRESS=1
+        export CCACHE_COMPRESSLEVEL=6
+        export CCACHE_MAXSIZE=2G
+        
+        echo "🔧 编译线程数: $(nproc)"
+        echo "📦 ccache 状态:"
+        ccache -s 2>/dev/null || echo "ccache 未安装或首次运行"
+        
+        # 编译：优先并行，失败时降级单线程重试
+        make -j$(($(nproc) + 1)) || make -j1 || make -j1 V=s
+        
+        echo "✅ 编译完成，ccache 统计:"
+        ccache -s 2>/dev/null || true
+        
         echo "status=success" >> $GITHUB_OUTPUT
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    # [12] 检查磁盘使用情况 (调试用)
+    # [12] 检查磁盘使用情况
     - name: 检查磁盘空间使用
       if: (!cancelled())
       run: df -hT
 
-    # [13] 上传 bin 目录到 Actions 产物 (含所有中间文件)
-    - name: 上传 bin 目录 (Actions 产物)
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
-
-    # [14] 整理固件文件 (移除 packages 目录，只保留固件)
+    # [13] 整理固件文件
     - name: 整理固件文件
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
@@ -156,7 +158,7 @@ jobs:
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    # [15] 上传固件到 Actions 产物
+    # [14] 上传固件到 Actions 产物
     - name: 上传固件 (Actions 产物)
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
@@ -164,7 +166,7 @@ jobs:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    # [16] 生成 Release 标签
+    # [15] 生成 Release 标签
     - name: 生成 Release 标签
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
@@ -172,20 +174,23 @@ jobs:
          time=$(date +%Y.%m.%d)
          release_tag="360T7-ImmortalWrt-2410-$time"
          release_name="360T7-ImmortalWrt-2410-$time"
-         echo "==================================" >> release.txt
-         echo "  360T7 ImmortalWrt 固件构建成功" >> release.txt
-         echo "==================================" >> release.txt
-         echo "📅 构建日期：$time" >> release.txt
-         echo "🌐 默认网关：192.168.77.1" >> release.txt
-         echo "🔑 登录密码：无 (空)" >> release.txt
-         echo "🔧 内置组件：Nikki" >> release.txt
-         echo "==================================" >> release.txt
-         echo "⚠️ 提示：首次登录请修改默认密码" >> release.txt         
+
+         cat > release.txt <<EOF
+         ## 📦 固件信息
+         - 🎯 设备：360T7 (MT7981)
+         - 📅 构建：$time
+         - 🌐 网关：192.168.77.1
+         - 🔑 密码：*空*
+         - 🔧 组件：Nikki
+         
+         > ⚠️ 首次登录请修改默认密码
+         EOF
+
          echo "release_name=$release_name" >> $GITHUB_OUTPUT
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
 
-    # [17] 发布固件到 GitHub Releases
+    # [16] 发布固件到 GitHub Releases
     - name: 发布固件到 GitHub Releases
       uses: softprops/action-gh-release@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
@@ -196,14 +201,14 @@ jobs:
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
-    # [18] 清理旧的工作流运行记录 (保留最近10次，其余1天后删除)
+    # [17] 清理旧的工作流运行记录
     - name: 清理旧的工作流记录
       uses: GitRML/delete-workflow-runs@main
       with:
         retain_days: 1
         keep_minimum_runs: 10
 
-    # [19] 清理旧的 Releases (仅保留最新10个)
+    # [18] 清理旧的 Releases
     - name: 清理旧的 Releases
       uses: dev-drprasad/delete-older-releases@v0.2.1
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
