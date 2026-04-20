@@ -30,5 +30,5 @@ ImmortalWrt-360T7/
 
 ## ❤️感谢
 - hanwckf：https://github.com/hanwckf/immortalwrt-mt798x  
-- padavanonly：https://github.com/padavanonly/immortalwrtARM 、https://github.com/padavanonly/immortalwrt-mt798x-24.10
+- padavanonly：https://github.com/padavanonly/immortalwrtARM 、https://github.com/padavanonly/immortalwrt-mt798x-6.6
 - Actions-OpenWrt：https://github.com/P3TERX/Actions-OpenWrt
