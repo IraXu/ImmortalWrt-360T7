@@ -102,7 +102,17 @@ jobs:
       id: package
       run: |
         cd openwrt
+        # 放在 DIY 脚本之后，避免自定义脚本再次选中 Clashoo。
+        ./scripts/config -d PACKAGE_clashoo -d PACKAGE_luci-app-clashoo
         make defconfig
+        if grep -Eq '^CONFIG_PACKAGE_(clashoo|luci-app-clashoo)=[ym]$' .config; then
+          echo "::error::Clashoo 被其他包依赖重新选中，请检查对应包依赖"
+          exit 1
+        fi
+        if ! grep -qx 'CONFIG_PACKAGE_luci-app-openclash=y' .config; then
+          echo "::error::OpenClash 未选中，请检查包定义和依赖"
+          exit 1
+        fi
         make download -j16
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
