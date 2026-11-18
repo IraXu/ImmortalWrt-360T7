@@ -81,12 +81,6 @@ jobs:
           find package/feeds -name "$pkg" -type d -exec rm -rf {} \; 2>/dev/null || true
         done
         
-        # 确保 openclash 可用
-        if [ -d "package/feeds/small/luci-app-openclash" ]; then
-          echo "  ✅ 保留: luci-app-openclash"
-        else
-          echo "  ⚠️  警告: luci-app-openclash 未找到"
-        fi
         echo "✅ 冲突插件清理完成"
     # ============ 步骤结束 ============
 
@@ -98,6 +92,84 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
         
+    - name: 接入官方最新发布版 OpenClash
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cd openwrt
+        python3 - <<'PYTHON'
+        import json
+        import os
+        from pathlib import Path
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        from urllib.request import Request, urlopen
+        
+        root = Path.cwd()
+        if not (root / 'scripts/feeds').is_file():
+            raise SystemExit('请在 OpenWrt 源码根目录运行')
+        headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'OpenClash-firmware-build'}
+        token = os.environ.get('GH_TOKEN')
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+        request = Request('https://api.github.com/repos/vernesong/OpenClash/releases/latest', headers=headers)
+        with urlopen(request, timeout=60) as response:
+            release = json.load(response)
+        tag = release.get('tag_name', '')
+        if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag) or release.get('draft') or release.get('prerelease'):
+            raise SystemExit('无法识别官方 latest release，停止构建，不回退旧版')
+        print('官方最新发布版：' + tag, flush=True)
+        work = Path(tempfile.mkdtemp(prefix='official-openclash-', dir=os.environ.get('RUNNER_TEMP')))
+        checkout = work / 'upstream'
+        subprocess.run(['git', 'clone', '--depth', '1', '--branch', tag, '--',
+                        'https://github.com/vernesong/OpenClash.git', str(checkout)], check=True)
+        package = checkout / 'luci-app-openclash'
+        makefile = (package / 'Makefile').read_text()
+        match = re.search(r'^PKG_VERSION\s*:?=\s*(\S+)\s*$', makefile, re.M)
+        if not match or match[1] != tag[1:]:
+            raise SystemExit('官方 tag 与包版本不匹配，停止构建')
+        version = match[1]
+        commit = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+        # Download and verify the official source before moving existing package definitions.
+        # Backups stay outside OpenWrt, so its package scanner cannot select them.
+        old = []
+        for base in ('package', 'feeds'):
+            for current, dirs, files in os.walk(root / base, followlinks=False):
+                for name in list(dirs):
+                    if name == 'luci-app-openclash':
+                        old.append(Path(current) / name)
+                        dirs.remove(name)
+        backup = work / 'old-packages'
+        backup.mkdir()
+        for i, path in enumerate(old):
+            print('移出旧 OpenClash 定义：' + str(path.relative_to(root)), flush=True)
+            shutil.move(str(path), str(backup / str(i)))
+        destination = root / 'package/luci-app-openclash'
+        shutil.copytree(package, destination)
+        # Also detect alternate directory names containing a duplicate package declaration.
+        definitions = []
+        for current, dirs, files in os.walk(root / 'package', followlinks=True):
+            dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules')]
+            if 'Makefile' in files:
+                path = Path(current) / 'Makefile'
+                text = path.read_text(errors='replace')
+                if re.search(r'^\s*(?:PKG_NAME\s*:?=\s*luci-app-openclash\s*$|define\s+Package/luci-app-openclash\s*$)', text, re.M):
+                    definitions.append(path)
+        if definitions != [destination / 'Makefile']:
+            raise SystemExit('OpenClash 包定义不唯一：' + repr([str(p) for p in definitions]))
+        record = f'OpenClash tag: {tag}\nPackage version: {version}\nSource commit: {commit}\n'
+        print(record, flush=True)
+        workspace = Path(os.environ.get('GITHUB_WORKSPACE', root.parent))
+        (workspace / 'openclash-source.txt').write_text(record)
+        if os.environ.get('GITHUB_ENV'):
+            with open(os.environ['GITHUB_ENV'], 'a') as envfile:
+                envfile.write(f'OPENCLASH_VERSION={version}\nOPENCLASH_TAG={tag}\n')
+        PYTHON
+
     - name: 下载包
       id: package
       run: |
@@ -109,6 +181,8 @@ jobs:
         # CONFIG_PACKAGE_clashoo is not set
         # CONFIG_PACKAGE_luci-app-clashoo is not set
         EOF
+        sed -i -E '/^(# )?CONFIG_PACKAGE_luci-app-openclash(=| is not set)/d' .config
+        echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
         make defconfig
         if grep -Eq '^CONFIG_PACKAGE_(clashoo|luci-app-clashoo)=[ym]$' .config; then
           echo "::error::Clashoo 被其他包依赖重新选中，请检查对应包依赖"
@@ -137,6 +211,18 @@ jobs:
           exit 1
         fi
 
+    - name: 核对 OpenClash 安装包版本
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -n "${OPENCLASH_VERSION:-}"
+        mapfile -t packages < <(find openwrt/bin -type f -name "luci-app-openclash_${OPENCLASH_VERSION}*.ipk" -print)
+        if (( ${#packages[@]} == 0 )); then
+          echo "::error::未生成官方版本 OpenClash 安装包：$OPENCLASH_VERSION"
+          exit 1
+        fi
+        printf '已生成：%s\n' "${packages[@]}"
+
     - name: 整理固件
       id: organize
       if: success() && steps.compile.outputs.status == 'success' && (env.UPLOAD_FIRMWARE == 'true' || env.UPLOAD_RELEASE == 'true')
@@ -157,6 +243,7 @@ jobs:
           exit 1
         fi
         mkdir -p "$output_dir"
+        cp "$GITHUB_WORKSPACE/openclash-source.txt" "$output_dir/"
         # 保留原始文件名和扩展名；不删除构建目录内任何诊断文件。
         cp -- "${sysupgrade[0]}" "$output_dir/"
         for image in "$target_dir"/*factory.bin "$target_dir"/*factory.ubi "$target_dir"/*factory.itb; do
@@ -172,7 +259,9 @@ jobs:
       with:
         name: build-diagnostics-${{ github.run_id }}
         if-no-files-found: warn
+        include-hidden-files: true
         path: |
+          openclash-source.txt
           build-parallel.log
           build-verbose.log
           openwrt/.config
@@ -196,7 +285,7 @@ jobs:
          echo "跟进上游变更
          默认网关：192.168.77.1
          登录密码：--
-         内置构建了OpenClash">> release.txt
+         内置 OpenClash $OPENCLASH_TAG">> release.txt
          echo "release_name=$release_name" >> $GITHUB_OUTPUT
          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
          echo "status=success" >> $GITHUB_OUTPUT
