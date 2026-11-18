@@ -170,22 +170,100 @@ jobs:
                 envfile.write(f'OPENCLASH_VERSION={version}\nOPENCLASH_TAG={tag}\n')
         PYTHON
 
+    - name: 移出 Clashoo 包定义及语言包
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd openwrt
+        python3 - <<'PYTHON'
+        import os
+        from pathlib import Path
+        import shutil
+        import tempfile
+        backup = Path(tempfile.mkdtemp(prefix="disabled-clashoo-", dir=os.environ["RUNNER_TEMP"]))
+        candidates = []
+        for base in ("package", "feeds"):
+            for current, dirs, files in os.walk(base, followlinks=False):
+                for name in list(dirs):
+                    if name in ("clashoo", "luci-app-clashoo") or name.startswith("luci-i18n-clashoo-"):
+                        candidates.append(Path(current) / name)
+                        dirs.remove(name)
+        for index, path in enumerate(candidates):
+            print(f"移出不需要的 Clashoo 包定义：{path}", flush=True)
+            shutil.move(str(path), str(backup / str(index)))
+        PYTHON
+
     - name: 下载包
       id: package
       run: |
         cd openwrt
         # 放在 DIY 脚本之后，避免自定义脚本再次选中 Clashoo。
-        test -f .config
-        sed -i -E '/^(# )?CONFIG_PACKAGE_(clashoo|luci-app-clashoo)(=| is not set)/d' .config
-        cat >> .config <<'EOF'
-        # CONFIG_PACKAGE_clashoo is not set
-        # CONFIG_PACKAGE_luci-app-clashoo is not set
-        EOF
-        sed -i -E '/^(# )?CONFIG_PACKAGE_luci-app-openclash(=| is not set)/d' .config
-        echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
+        python3 - <<'CONFIGEDIT'
+        from pathlib import Path
+        import re
+        path = Path('.config')
+        lines = path.read_text().splitlines()
+        pattern = re.compile(r'^(?:# )?CONFIG_PACKAGE_(?:clashoo|luci-app-clashoo|luci-i18n-clashoo-[A-Za-z0-9_-]+|luci-app-openclash)(?:=| is not set)')
+        lines = [line for line in lines if not pattern.match(line)]
+        lines += ['# CONFIG_PACKAGE_clashoo is not set', '# CONFIG_PACKAGE_luci-app-clashoo is not set', '# CONFIG_PACKAGE_luci-i18n-clashoo-zh-cn is not set', 'CONFIG_PACKAGE_luci-app-openclash=y']
+        path.write_text('\n'.join(lines) + '\n')
+        CONFIGEDIT
         make defconfig
-        if grep -Eq '^CONFIG_PACKAGE_(clashoo|luci-app-clashoo)=[ym]$' .config; then
-          echo "::error::Clashoo 被其他包依赖重新选中，请检查对应包依赖"
+        cp .config "$GITHUB_WORKSPACE/resolved.config"
+        python3 - <<'PREFLIGHT'
+        from pathlib import Path
+        import os
+        import re
+        
+        text = Path('.config').read_text()
+        selected = dict(re.findall(r'^(CONFIG_[A-Za-z0-9_-]+)=([ym])$', text, re.M))
+        required = [
+         'TARGET_mediatek', 'TARGET_mediatek_mt7981',
+         'TARGET_mediatek_mt7981_DEVICE_mt7981-360-t7-108M',
+         'PACKAGE_luci-app-openclash', 'PACKAGE_luci-mod-system',
+         'PACKAGE_firewall', 'PACKAGE_dnsmasq-full', 'PACKAGE_dnsmasq_full_ipset',
+         'PACKAGE_ip-full', 'PACKAGE_bash', 'PACKAGE_curl', 'PACKAGE_ca-bundle',
+         'PACKAGE_ruby', 'PACKAGE_ruby-yaml', 'PACKAGE_unzip', 'PACKAGE_ipset',
+         'PACKAGE_iptables', 'PACKAGE_iptables-mod-tproxy', 'PACKAGE_iptables-mod-extra',
+         'PACKAGE_kmod-ipt-nat', 'PACKAGE_kmod-tun', 'PACKAGE_kmod-inet-diag',
+         'PACKAGE_kmod-mt_wifi', 'PACKAGE_kmod-conninfra', 'PACKAGE_luci-app-mtk',
+         'PACKAGE_fstools', 'PACKAGE_mtd', 'PACKAGE_fwtool',
+        ]
+        errors = []
+        for symbol in required:
+            if selected.get('CONFIG_' + symbol) != 'y':
+                errors.append('缺少必要配置：CONFIG_' + symbol + '=y')
+        for symbol in ['ALL', 'ALL_NONSHARED', 'ALL_KMODS', 'SDK', 'PACKAGE_dnsmasq', 'PACKAGE_ip-tiny', 'PACKAGE_firewall4']:
+            if 'CONFIG_' + symbol in selected:
+                errors.append('不应启用：CONFIG_' + symbol)
+        for symbol in selected:
+            if re.fullmatch(r'CONFIG_PACKAGE_(clashoo|luci-app-clashoo|luci-i18n-clashoo-.+|mihomo|nikki|momo|dae|daed|dns2socks-rust|luci-app-(nikki|momo|daede|fchomo|homeproxy|passwall2))', symbol):
+                errors.append('存在不需要的额外代理包：' + symbol)
+        # In addition to checking symbols, verify scanner input: no Clashoo package can be scanned.
+        for current, dirs, files in os.walk('package', followlinks=True):
+            dirs[:] = [name for name in dirs if name not in ('.git', 'node_modules')]
+            if 'Makefile' in files:
+                path = Path(current) / 'Makefile'
+                data = path.read_text(errors='replace')
+                if re.search(r'^\s*(?:PKG_NAME\s*:?=\s*(?:clashoo|luci-app-clashoo)\s*$|define\s+Package/(?:clashoo|luci-app-clashoo|luci-i18n-clashoo-[^/\s]+)\s*$)', data, re.M):
+                    errors.append('仍能扫描到 Clashoo 包定义：' + str(path))
+        metadata = Path('tmp/.packageinfo')
+        if not metadata.is_file():
+            errors.append('缺少 make defconfig 应生成的 tmp/.packageinfo，无法验证包扫描结果')
+        else:
+            for line in metadata.read_text(errors='replace').splitlines():
+                if re.match(r'^Source-Makefile:.*(?:/clashoo/|/luci-app-clashoo/)', line):
+                    errors.append('包元数据仍引用 Clashoo：' + line)
+        report = '预检结果：' + ('失败' if errors else '通过') + '\n'
+        report += '\n'.join(errors) + '\n'
+        report += '已选择软件包：\n' + '\n'.join(sorted(k + '=' + v for k, v in selected.items() if k.startswith('CONFIG_PACKAGE_'))) + '\n'
+        Path(os.environ['GITHUB_WORKSPACE'], 'preflight-report.txt').write_text(report)
+        print(report, flush=True)
+        if errors:
+            raise SystemExit('编译前预检失败；不开始下载和编译，请查看 preflight-report.txt')
+        PREFLIGHT
+        if grep -Eq '^CONFIG_PACKAGE_(clashoo|luci-app-clashoo|luci-i18n-clashoo-[A-Za-z0-9_-]+)=[ym]$' .config; then
+          echo "::error::Clashoo 或其语言包仍被选中，请检查对应包依赖"
           exit 1
         fi
         if ! grep -qx 'CONFIG_PACKAGE_luci-app-openclash=y' .config; then
@@ -254,7 +332,7 @@ jobs:
         echo "status=success" >> "$GITHUB_OUTPUT"
 
     - name: 上传编译诊断日志
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: always()
       with:
         name: build-diagnostics-${{ github.run_id }}
@@ -262,6 +340,9 @@ jobs:
         include-hidden-files: true
         path: |
           openclash-source.txt
+          preflight-report.txt
+          resolved.config
+          openwrt/tmp/.packageinfo
           build-parallel.log
           build-verbose.log
           openwrt/.config
@@ -269,7 +350,7 @@ jobs:
           openwrt/bin/targets/mediatek/mt7981/profiles.json
 
     - name: 上传固件到Github Action空间
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v6
       if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
       with:
         name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
