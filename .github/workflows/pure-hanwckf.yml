@@ -103,7 +103,12 @@ jobs:
       run: |
         cd openwrt
         # 放在 DIY 脚本之后，避免自定义脚本再次选中 Clashoo。
-        ./scripts/config -d PACKAGE_clashoo -d PACKAGE_luci-app-clashoo
+        test -f .config
+        sed -i -E '/^(# )?CONFIG_PACKAGE_(clashoo|luci-app-clashoo)(=| is not set)/d' .config
+        cat >> .config <<'EOF'
+        # CONFIG_PACKAGE_clashoo is not set
+        # CONFIG_PACKAGE_luci-app-clashoo is not set
+        EOF
         make defconfig
         if grep -Eq '^CONFIG_PACKAGE_(clashoo|luci-app-clashoo)=[ym]$' .config; then
           echo "::error::Clashoo 被其他包依赖重新选中，请检查对应包依赖"
