@@ -109,40 +109,71 @@ jobs:
         
     - name: 编译固件
       id: compile
+      shell: bash
       run: |
+        set -euo pipefail
         cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s || (curl -k -d "title=OpenWrt-360T7固件编译失败" -d "content=编译固件版本：${{ env.FIRMWARE_VERSION }}%0A编译开始时间：${{ env.START_DATE }}%0A编译结束时间：$(date +'%Y年%m月%d日 %H点%M分%S秒')" -d "token=${{ env.PUSHPLUS_TOKEN }}&channel=cp&webhook=server" "http://www.pushplus.plus/send")
-        echo "status=success" >> $GITHUB_OUTPUT
-        
+        if make -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/build-parallel.log"; then
+          echo "status=success" >> "$GITHUB_OUTPUT"
+        elif make -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/build-verbose.log"; then
+          echo "status=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error::固件编译失败，请下载编译诊断日志查看 build-verbose.log"
+          exit 1
+        fi
+
     - name: 整理固件
       id: organize
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      if: success() && steps.compile.outputs.status == 'success' && (env.UPLOAD_FIRMWARE == 'true' || env.UPLOAD_RELEASE == 'true')
+      shell: bash
       run: |
-        # 整理固件包时候,删除您不想要的固件或者文件,让它不需要上传到Actions空间
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        rm -rf version.buildinfo
-        rm -rf profiles.json
-        rm -rf *rootfs*
-        rm -rf *kernel*
-        rm -rf *.manifest
-        rm -rf sha256sums
-        mv *sysupgrade.bin ${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-sysupgrade.bin
-        mv *factory.bin ${{ env.FIRMWARE_VERSION }}-ImmortalWrt-360T7-108M-factory.bin
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
-        
+        set -euo pipefail
+        target_dir="$GITHUB_WORKSPACE/openwrt/bin/targets/mediatek/mt7981"
+        output_dir="$GITHUB_WORKSPACE/firmware-output"
+        if [[ ! -d "$target_dir" ]]; then
+          echo "::error::未找到预期固件目录：$target_dir"
+          exit 1
+        fi
+        find "$target_dir" -maxdepth 1 -type f -print
+        shopt -s nullglob
+        sysupgrade=("$target_dir"/*sysupgrade.bin "$target_dir"/*sysupgrade.itb "$target_dir"/*sysupgrade.tar)
+        if (( ${#sysupgrade[@]} != 1 )); then
+          echo "::error::预期仅生成一个 sysupgrade 镜像，实际找到 ${#sysupgrade[@]} 个。检查编译日志、设备选择及镜像文件名。"
+          exit 1
+        fi
+        mkdir -p "$output_dir"
+        # 保留原始文件名和扩展名；不删除构建目录内任何诊断文件。
+        cp -- "${sysupgrade[0]}" "$output_dir/"
+        for image in "$target_dir"/*factory.bin "$target_dir"/*factory.ubi "$target_dir"/*factory.itb; do
+          cp -- "$image" "$output_dir/"
+        done
+        (cd "$output_dir" && sha256sum -- * > SHA256SUMS)
+        echo "FIRMWARE=$output_dir" >> "$GITHUB_ENV"
+        echo "status=success" >> "$GITHUB_OUTPUT"
+
+    - name: 上传编译诊断日志
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: build-diagnostics-${{ github.run_id }}
+        if-no-files-found: warn
+        path: |
+          build-parallel.log
+          build-verbose.log
+          openwrt/.config
+          openwrt/bin/targets/mediatek/mt7981/*.buildinfo
+          openwrt/bin/targets/mediatek/mt7981/profiles.json
+
     - name: 上传固件到Github Action空间
       uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
+      if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
       with:
         name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
         path: ${{ env.FIRMWARE }}
         
     - name: 创建release标签
       id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
       run: |
          time=$(date +%Y.%m.%d)
          release_tag="360T7-hanwckf-ImmortalWrt-$time"
@@ -157,13 +188,14 @@ jobs:
         
     - name: 将固件上传到release
       uses: softprops/action-gh-release@v1
-      if: steps.tag.outputs.status == 'success' && !cancelled()
+      if: success() && steps.organize.outputs.status == 'success' && steps.tag.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
       env:
         GITHUB_TOKEN: ${{ secrets.GIT_USER_TOKEN }}
       with:
          name: ${{ steps.tag.outputs.release_name }} 
          tag_name: ${{ steps.tag.outputs.release_tag }}
          body_path: release.txt
+         fail_on_unmatched_files: true
          files: ${{ env.FIRMWARE }}/*
 
     - name: 删除工作流运行
@@ -174,7 +206,7 @@ jobs:
 
     - name: 删除旧的releases
       uses: dev-drprasad/delete-older-releases@v0.2.1
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
       with:
         keep_latest: 10
         delete_tags: true
