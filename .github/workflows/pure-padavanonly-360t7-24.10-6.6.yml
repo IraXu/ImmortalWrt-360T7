@@ -34,6 +34,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 360
     defaults:
       run:
         shell: bash
@@ -42,7 +43,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 释放磁盘空间
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@cf1e78c50ca91e757bab3edc229027eebfc07871 # 固定已核对的提交
         with:
           tool-cache: true
           android: true
@@ -112,7 +113,9 @@ jobs:
               ("set system.@system[-1].hostname='ImmortalWrt'", "set system.@system[-1].hostname='360T7'"),
           ]
           for old, new in replacements:
-              if content.count(old) != 1:
+              if content.count(new) == 1 and old not in content:
+                  continue  # 兼容 DIY 脚本已经正确设置默认值的情况。
+              if content.count(old) != 1 or new in content:
                   raise SystemExit('默认设置未唯一匹配，请检查上游源码：' + old)
               content = content.replace(old, new)
           generator.write_text(content)
@@ -133,13 +136,44 @@ jobs:
           cp .config "$GITHUB_WORKSPACE/diagnostics/config.final"
           ./scripts/diffconfig.sh > "$GITHUB_WORKSPACE/diagnostics/config.seed"
           diff -u "$GITHUB_WORKSPACE/diagnostics/config.requested" .config > "$GITHUB_WORKSPACE/diagnostics/config-resolution.diff" || test "$?" -eq 1
-          for symbol in TARGET_mediatek TARGET_mediatek_filogic TARGET_mediatek_filogic_DEVICE_qihoo_360t7 PACKAGE_luci-app-nikki PACKAGE_nikki PACKAGE_mihomo PACKAGE_firewall4 CCACHE; do
+          # 单独列出请求值发生改变的选项，避免完整 diff 被默认配置淹没。
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          diagnostics = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'diagnostics'
+          def parse(path):
+              values = {}
+              for line in path.read_text().splitlines():
+                  match = re.fullmatch(r'(CONFIG_\S+)=(.*)', line)
+                  disabled = re.fullmatch(r'# (CONFIG_\S+) is not set', line)
+                  if match:
+                      values[match[1]] = match[2]
+                  elif disabled:
+                      values[disabled[1]] = 'n'
+              return values
+          requested = parse(diagnostics / 'config.requested')
+          resolved = parse(diagnostics / 'config.final')
+          changes = []
+          for key, value in requested.items():
+              actual = resolved.get(key, 'n')
+              if actual != value:
+                  changes.append(f'{key}: {value} -> {actual}')
+          (diagnostics / 'config-changes.txt').write_text(
+              '仅比较输入中明确指定的配置；n 包括关闭或解析后未保留。\n'
+              + ('\n'.join(changes) if changes else '所有明确指定的配置值均已保留。') + '\n')
+          devices = [key for key, value in resolved.items()
+                     if key.startswith('CONFIG_TARGET_mediatek_filogic_DEVICE_') and value == 'y']
+          if devices != ['CONFIG_TARGET_mediatek_filogic_DEVICE_qihoo_360t7']:
+              raise SystemExit('设备选择不是唯一的 360T7：' + repr(devices))
+          PY
+          for symbol in TARGET_mediatek TARGET_mediatek_filogic TARGET_mediatek_filogic_DEVICE_qihoo_360t7 PACKAGE_luci-app-nikki PACKAGE_nikki PACKAGE_mihomo PACKAGE_firewall4 PACKAGE_yq CCACHE; do
             if ! grep -qx "CONFIG_${symbol}=y" .config; then
               echo "::error::关键配置未生效：CONFIG_${symbol}=y"
               exit 1
             fi
           done
-          for symbol in PACKAGE_firewall PACKAGE_luci-app-turboacc-mtk PACKAGE_luci-i18n-turboacc-mtk-zh-cn; do
+          for symbol in PACKAGE_firewall PACKAGE_sing-box PACKAGE_ruby PACKAGE_libruby PACKAGE_luci-app-turboacc-mtk PACKAGE_luci-i18n-turboacc-mtk-zh-cn PACKAGE_haproxy PACKAGE_chinadns-ng PACKAGE_geoview PACKAGE_ebtables-legacy PACKAGE_ebtables-legacy-utils PACKAGE_iptables-nft PACKAGE_ipset PACKAGE_kmod-ebtables PACKAGE_kmod-ebtables-ipv4 PACKAGE_kmod-ebtables-ipv6; do
             if grep -Eq "^CONFIG_${symbol}=[ym]$" .config; then
               echo "::error::应禁用的配置被重新选中：CONFIG_${symbol}"
               exit 1
@@ -148,6 +182,7 @@ jobs:
 
       - name: 恢复编译缓存
         id: cache
+        continue-on-error: true
         if: env.CLEAN_CCACHE != 'true'
         uses: actions/cache/restore@v4
         with:
@@ -159,7 +194,9 @@ jobs:
       - name: 下载软件包
         run: |
           cd openwrt
-          make download -j8 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download.log"
+          if ! make download -j8 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download.log"; then
+            make download -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download-retry.log"
+          fi
 
       - name: 编译固件
         id: compile
@@ -187,16 +224,40 @@ jobs:
         if: steps.compile.outputs.status == 'success'
         run: |
           firmware_dir="$GITHUB_WORKSPACE/firmware"
-          mkdir -p "$firmware_dir"
-          target_dir=/workdir/openwrt/bin/targets/mediatek/filogic
-          shopt -s nullglob
-          images=("$target_dir"/*360t7*sysupgrade.bin)
-          if [ "${#images[@]}" -ne 1 ]; then
-            echo '::error::未找到唯一的 360T7 sysupgrade 固件'
-            exit 1
-          fi
-          # 保留目标目录中的构建信息；不上传 packages 子目录。
-          find "$target_dir" -maxdepth 1 -type f -exec cp -t "$firmware_dir" {} +
+          # 检查实际固件包清单，并只收集 360T7 固件及相关信息。
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import shutil
+          target = pathlib.Path('/workdir/openwrt/bin/targets/mediatek/filogic')
+          destination = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'firmware'
+          images = sorted(target.glob('*360t7*sysupgrade.bin'))
+          if len(images) != 1 or images[0].stat().st_size == 0:
+              raise SystemExit('未找到唯一且非空的 360T7 sysupgrade 固件')
+          manifests = sorted(target.glob('*360t7*.manifest')) or sorted(target.glob('*.manifest'))
+          if len(manifests) != 1:
+              raise SystemExit('无法唯一确定固件包清单，拒绝发布')
+          packages = {line.split(' - ', 1)[0].strip()
+                      for line in manifests[0].read_text().splitlines() if line.strip()}
+          required = {'luci-app-nikki', 'nikki', 'mihomo', 'firewall4', 'curl', 'ip-full', 'yq'}
+          forbidden = {'firewall', 'sing-box', 'ruby', 'libruby3.3', 'haproxy', 'chinadns-ng', 'geoview', 'ebtables-legacy', 'ebtables-legacy-utils', 'iptables-nft', 'ipset', 'kmod-ebtables', 'kmod-ebtables-ipv4', 'kmod-ebtables-ipv6', 'luci-app-turboacc-mtk', 'luci-i18n-turboacc-mtk-zh-cn'}
+          missing, unwanted = required - packages, forbidden & packages
+          if missing or unwanted:
+              raise SystemExit(f'固件包清单检查失败：缺失 {sorted(missing)}；不应包含 {sorted(unwanted)}')
+          destination.mkdir(parents=True, exist_ok=True)
+          selected = images + manifests
+          selected += [target / name for name in
+                       ['config.buildinfo', 'feeds.buildinfo', 'version.buildinfo', 'profiles.json']
+                       if (target / name).is_file()]
+          for source in selected:
+              shutil.copy2(source, destination / source.name)
+          checksums = []
+          for source in sorted(destination.iterdir()):
+              if source.is_file() and source.name != 'sha256sums':
+                  checksums.append(hashlib.sha256(source.read_bytes()).hexdigest() + '  ' + source.name)
+          (destination / 'sha256sums').write_text('\n'.join(checksums) + '\n')
+          PY
           build_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
           release_tag="360T7-pure-2410-$(date +%Y%m%d-%H%M%S)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           source_commit="$(cat diagnostics/source-commit.txt)"
@@ -207,6 +268,12 @@ jobs:
           - 源码分支：$REPO_BRANCH
           - 源码提交：$source_commit
           - 首次初始化 LAN 地址：192.168.77.1
+          - 主机名：360T7
+          - 仅保留 Nikki 透明代理；移除 sing-box、Ruby 和无关代理/防火墙组件
+          - 保留旧配置升级时，网络设置及密码以恢复后的配置为准
+          - 已核对固件包清单：包含 Nikki、Mihomo、firewall4，不含 sing-box、Ruby、turboacc-mtk 及旧版防火墙组件
+          - 配置变化报告：config-and-logs 产物中的 config-changes.txt
+          - 构建日志与最终配置：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           EOF
           echo "firmware=$firmware_dir" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
