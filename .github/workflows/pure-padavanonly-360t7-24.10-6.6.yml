@@ -5,200 +5,244 @@ on:
   workflow_dispatch:
     inputs:
       clean:
-         description: '是否清理ccache'
-         default: 'false'
+        description: '忽略旧 ccache，使用空缓存重新编译'
+        type: boolean
+        default: false
 
+permissions:
+  contents: write
 
-# ==================== 环境变量配置 ====================
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
   REPO_BRANCH: openwrt-24.10-6.6
-  FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: 6.6_pure.config
+  FEEDS_CONF: feeds.conf.default
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
+  UPLOAD_FIRMWARE: 'true'
+  UPLOAD_RELEASE: 'true'
   TZ: Asia/Shanghai
+  # repository_dispatch 可通过 client_payload.clean=true 忽略旧缓存。
+  CLEAN_CCACHE: ${{ inputs.clean || github.event.client_payload.clean || false }}
+  CCACHE_MAXSIZE: 2G
+  CCACHE_COMPRESS: '1'
 
-# ==================== 编译任务定义 ====================
 jobs:
   build:
     runs-on: ubuntu-22.04
-
+    defaults:
+      run:
+        shell: bash
     steps:
-    # [1] 检出仓库代码
-    - name: 检出项目分支源码
-      uses: actions/checkout@main
+      - name: 检出项目
+        uses: actions/checkout@v4
 
-    # [2] 清理磁盘空间
-    - name: 释放编译环境磁盘空间 (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: true
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: true
-        docker-images: true
-        swap-storage: true
+      - name: 释放磁盘空间
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
 
-    # [3] 初始化编译环境
-    - name: 初始化编译环境
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo timedatectl set-timezone "$TZ"
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo apt-mark hold grub-efi-amd64-signed
-        sudo apt update -y
-        sudo apt full-upgrade -y
-        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
+      - name: 初始化环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo timedatectl set-timezone "$TZ"
+          sudo apt-get update
+          sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+          sudo mkdir -p /workdir
+          sudo chown "$(id -u):$(id -g)" /workdir
+          mkdir -p diagnostics
 
-    # [4] 克隆ImmortalWrt源码
-    - name: 克隆 ImmortalWrt 源码仓库
-      working-directory: /workdir
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH --single-branch --depth 1 openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+      - name: 克隆源码
+        working-directory: /workdir
+        run: |
+          git clone "$REPO_URL" -b "$REPO_BRANCH" --single-branch --depth 1 openwrt
+          ln -s /workdir/openwrt "$GITHUB_WORKSPACE/openwrt"
+          git -C openwrt rev-parse HEAD > "$GITHUB_WORKSPACE/diagnostics/source-commit.txt"
+          git -C "$GITHUB_WORKSPACE" rev-parse HEAD > "$GITHUB_WORKSPACE/diagnostics/project-commit.txt"
 
-    # [5] 加载自定义 feeds 配置
-    - name: 加载自定义 feeds 配置
-      run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
+      - name: 加载 feeds 配置及前置脚本
+        run: |
+          if [ -f "$FEEDS_CONF" ]; then
+            cp "$FEEDS_CONF" openwrt/feeds.conf.default
+          fi
+          test -f "$DIY_P1_SH"
+          cd openwrt
+          bash "$GITHUB_WORKSPACE/$DIY_P1_SH"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          cp feeds.conf.default "$GITHUB_WORKSPACE/diagnostics/feeds.conf.default"
+          for feed in feeds/*; do
+            if [ -d "$feed" ] && git -C "$feed" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              printf '%s %s\n' "$feed" "$(git -C "$feed" rev-parse HEAD)"
+            fi
+          done > "$GITHUB_WORKSPACE/diagnostics/feed-commits.txt"
 
-    # [6] 更新 feeds 索引
-    - name: 更新 feeds 索引
-      run: cd openwrt && ./scripts/feeds update -a
+      - name: 加载配置和初始化设置
+        run: |
+          test -s "$CONFIG_FILE"
+          cp "$CONFIG_FILE" openwrt/.config
+          if [ -d files ]; then
+            mkdir -p openwrt/files
+            cp -a files/. openwrt/files/
+          fi
+          test -f "$DIY_P2_SH"
+          cd openwrt
+          bash "$GITHUB_WORKSPACE/$DIY_P2_SH"
+          # 修正上游的默认生成值；已有的 network/system 配置由上游正常保留。
+          # 原 DIY 脚本的单引号使日期命令成为字面量，这里写入实际构建日期。
+          python3 - <<'PY'
+          import datetime
+          import pathlib
+          import re
+          generator = pathlib.Path('package/base-files/files/bin/config_generate')
+          content = generator.read_text()
+          replacements = [
+              ('192.168.6.1', '192.168.77.1'),
+              ("set system.@system[-1].hostname='ImmortalWrt'", "set system.@system[-1].hostname='360T7'"),
+          ]
+          for old, new in replacements:
+              if content.count(old) != 1:
+                  raise SystemExit('默认设置未唯一匹配，请检查上游源码：' + old)
+              content = content.replace(old, new)
+          generator.write_text(content)
+          path = pathlib.Path('package/base-files/files/etc/openwrt_release')
+          content = path.read_text()
+          description = 'DISTRIB_DESCRIPTION="ImmortalWrt By IraXu ' + datetime.datetime.now().strftime('%Y%m%d') + '"'
+          content, count = re.subn(r'^DISTRIB_DESCRIPTION=.*$', description, content, flags=re.M)
+          if count != 1:
+              raise SystemExit('DISTRIB_DESCRIPTION 未唯一匹配，请检查上游源码')
+          path.write_text(content)
+          PY
 
-    # [7] 安装 feeds 软件包
-    - name: 安装 feeds 软件包
-      run: cd openwrt && ./scripts/feeds install -a
+      - name: 解析配置并检查关键选项
+        run: |
+          cd openwrt
+          cp .config "$GITHUB_WORKSPACE/diagnostics/config.requested"
+          make defconfig 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/defconfig.log"
+          cp .config "$GITHUB_WORKSPACE/diagnostics/config.final"
+          ./scripts/diffconfig.sh > "$GITHUB_WORKSPACE/diagnostics/config.seed"
+          diff -u "$GITHUB_WORKSPACE/diagnostics/config.requested" .config > "$GITHUB_WORKSPACE/diagnostics/config-resolution.diff" || test "$?" -eq 1
+          for symbol in TARGET_mediatek TARGET_mediatek_filogic TARGET_mediatek_filogic_DEVICE_qihoo_360t7 PACKAGE_luci-app-nikki PACKAGE_nikki PACKAGE_mihomo PACKAGE_firewall4 CCACHE; do
+            if ! grep -qx "CONFIG_${symbol}=y" .config; then
+              echo "::error::关键配置未生效：CONFIG_${symbol}=y"
+              exit 1
+            fi
+          done
+          for symbol in PACKAGE_firewall PACKAGE_luci-app-turboacc-mtk PACKAGE_luci-i18n-turboacc-mtk-zh-cn; do
+            if grep -Eq "^CONFIG_${symbol}=[ym]$" .config; then
+              echo "::error::应禁用的配置被重新选中：CONFIG_${symbol}"
+              exit 1
+            fi
+          done
 
-    # [8] 加载自定义编译配置
-    - name: 加载自定义编译配置
-      run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+      - name: 恢复编译缓存
+        id: cache
+        if: env.CLEAN_CCACHE != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /workdir/openwrt/.ccache
+          key: ccache-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles('6.6_pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles('6.6_pure.config') }}-
 
-    # [9] 预下载软件包
-    - name: 预下载软件包
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+      - name: 下载软件包
+        run: |
+          cd openwrt
+          make download -j8 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download.log"
 
-    # [10] 编译固件（启用 ccache + 优化并行）
-    - name: 编译固件
-      id: compile
-      run: |
-        cd openwrt
-        # 启用 ccache
-        export USE_CCACHE=1
-        export CCACHE_DIR="$PWD/.ccache"
-        export CCACHE_COMPILERCHECK=content
-        export CCACHE_COMPRESS=1
-        export CCACHE_COMPRESSLEVEL=6
-        export CCACHE_MAXSIZE=2G
-        
-        echo "🔧 编译线程数: $(nproc)"
-        echo "📦 ccache 状态:"
-        ccache -s 2>/dev/null || echo "ccache 未安装或首次运行"
-        
-        # 编译：优先并行，失败时降级单线程重试
-        make -j$(($(nproc) + 1)) || make -j1 || make -j1 V=s
-        
-        echo "✅ 编译完成，ccache 统计:"
-        ccache -s 2>/dev/null || true
-        
-        echo "status=success" >> $GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+      - name: 编译固件
+        id: compile
+        run: |
+          cd openwrt
+          mkdir -p .ccache
+          if ! make -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/build-parallel.log"; then
+            make -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/build-serial.log"
+          fi
+          if [ -x staging_dir/host/bin/ccache ]; then
+            CCACHE_DIR="$PWD/.ccache" staging_dir/host/bin/ccache -s | tee "$GITHUB_WORKSPACE/diagnostics/ccache.txt"
+          fi
+          echo 'status=success' >> "$GITHUB_OUTPUT"
 
-    # [11] 检查磁盘使用情况
-    - name: 检查磁盘空间使用
-      if: (!cancelled())
-      run: df -hT
+      - name: 保存编译缓存
+        if: steps.compile.outputs.status == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: /workdir/openwrt/.ccache
+          key: ccache-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles('6.6_pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-    # [12] 整理固件文件
-    - name: 整理固件文件
-      id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: 整理固件及发布说明
+        id: organize
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          firmware_dir="$GITHUB_WORKSPACE/firmware"
+          mkdir -p "$firmware_dir"
+          target_dir=/workdir/openwrt/bin/targets/mediatek/filogic
+          shopt -s nullglob
+          images=("$target_dir"/*360t7*sysupgrade.bin)
+          if [ "${#images[@]}" -ne 1 ]; then
+            echo '::error::未找到唯一的 360T7 sysupgrade 固件'
+            exit 1
+          fi
+          # 保留目标目录中的构建信息；不上传 packages 子目录。
+          find "$target_dir" -maxdepth 1 -type f -exec cp -t "$firmware_dir" {} +
+          build_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+          release_tag="360T7-pure-2410-$(date +%Y%m%d-%H%M%S)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          source_commit="$(cat diagnostics/source-commit.txt)"
+          cat > release.txt <<EOF
+          ## 固件信息
+          - 设备：360T7 (MT7981)
+          - 构建时间：$build_time
+          - 源码分支：$REPO_BRANCH
+          - 源码提交：$source_commit
+          - 首次初始化 LAN 地址：192.168.77.1
+          EOF
+          echo "firmware=$firmware_dir" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_name=360T7 ImmortalWrt 24.10 pure $build_time" >> "$GITHUB_OUTPUT"
+          echo 'status=success' >> "$GITHUB_OUTPUT"
 
-    # [13] 上传固件到 Actions 产物
-    - name: 上传固件 (Actions 产物)
-      uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
+      - name: 上传固件
+        if: steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-360T7-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.organize.outputs.firmware }}
+          if-no-files-found: error
 
-    # [14] 生成 Release 标签
-    - name: 生成 Release 标签
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-         time=$(date +%Y.%m.%d)
-         release_tag="360T7-ImmortalWrt-2410-$time"
-         release_name="360T7-ImmortalWrt-2410-$time"
+      - name: 发布固件
+        if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.organize.outputs.release_tag }}
+          name: ${{ steps.organize.outputs.release_name }}
+          target_commitish: ${{ github.sha }}
+          body_path: release.txt
+          files: ${{ steps.organize.outputs.firmware }}/*
+          fail_on_unmatched_files: true
 
-         cat > release.txt <<EOF
-         ## 📦 固件信息
-         - 🎯 设备：360T7 (MT7981)
-         - 📅 构建：$time
-         - 🌐 网关：192.168.77.1
-         - 🔑 密码：*空*
-         - 🔧 组件：Nikki
-         
-         > ⚠️ 首次登录请修改默认密码
-         EOF
+      # 不再自动删除历史 Release / 运行记录，保留排查配置问题所需的证据。
+      - name: 上传配置及日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-and-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 30
 
-         echo "release_name=$release_name" >> $GITHUB_OUTPUT
-         echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
-         echo "status=success" >> $GITHUB_OUTPUT
-
-    # [15] 发布固件到 GitHub Releases
-    - name: 发布固件到 GitHub Releases
-      uses: softprops/action-gh-release@v1
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
-
-    # [16] 清理旧的工作流运行记录
-    - name: 清理旧的工作流记录
-      uses: GitRML/delete-workflow-runs@main
-      with:
-        retain_days: 1
-        keep_minimum_runs: 10
-
-    # [17] 清理旧的 Releases
-    - name: 清理旧的 Releases
-      uses: dev-drprasad/delete-older-releases@v0.2.1
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 10
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 检查磁盘使用情况
+        if: always()
+        run: df -hT
