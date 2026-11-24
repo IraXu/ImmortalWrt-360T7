@@ -5,11 +5,23 @@ on:
   workflow_dispatch:
     inputs:
       clean:
-         description: 'clean ccache'
-         default: 'false'
+        description: '忽略旧 ccache 缓存，用空缓存重新编译（构建完仍会保存新缓存）'
+        required: false
+        default: false
+        type: boolean
+
+# 默认的 GITHUB_TOKEN 是只读的：发布 release、清理旧 release、删除旧运行都需要显式授权
+permissions:
+  contents: write   # 创建/删除 release 与 tag
+  actions: write    # 删除旧的工作流运行
+
+# 同一分支只允许一个构建在跑，避免两个运行抢同一个 release
+concurrency:
+  group: pure-hanwckf-360t7
+  cancel-in-progress: false
 
 env:
-  REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x  
+  REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x
   REPO_BRANCH: openwrt-21.02
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: pure.config
@@ -18,80 +30,150 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
+  RELEASE_PREFIX: 360T7-hanwckf-ImmortalWrt
+  # 整个仓库共保留的 release 数（含另一个工作流发布的固件），按你的设计刻意如此
+  KEEP_RELEASES: 10
+  KEEP_RUNS: 3
+  # 编译缓存：workflow_dispatch 勾 clean=true 或 repository_dispatch 传 clean=true 时跳过恢复，
+  # 用空缓存重编（这次构建仍会保存新缓存，下一次就能命中）
+  CLEAN_CCACHE: ${{ inputs.clean || github.event.client_payload.clean || false }}
+  CCACHE_DIR: /workdir/openwrt/.ccache
+  CCACHE_MAXSIZE: 3G
+  CCACHE_COMPRESS: '1'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 360
 
     steps:
     - name: 检查项目分支
-      uses: actions/checkout@main
+      uses: actions/checkout@v7.0.1
 
     - name: 初始化编译环境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        set -euo pipefail
+        # 只删 runner 预装的第三方源（*.list），保留 ubuntu 自身的 sources，
+        # 这样以后把 runs-on 换成 ubuntu-24.04 也不会把 apt 弄坏
+        sudo find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.list' -delete
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo -E apt-get -qq update
-        sudo -E apt-get -qq install build-essential gawk gcc-multilib g++-multilib gettext libncurses-dev python3-distutils zlib1g-dev
+        # 21.02 编译完整依赖：bison/flex（内核 scripts/dtc）、libssl-dev、libelf-dev、
+        # rsync、swig、device-tree-compiler、zstd 等缺一不可
+        sudo -E apt-get -qq install \
+          ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+          bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext \
+          gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
+          lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
+          libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+          libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build \
+          p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+          python3-pyelftools python3-distutils qemu-utils re2c rsync scons squashfs-tools \
+          subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
-        echo "FIRMWARE_VERSION=$(date +"%y%m%d")" >> $GITHUB_ENV
-        echo "START_DATE=$(date +'%Y年%m月%d日 %H点%M分%S秒')" >> $GITHUB_ENV
-        
+        sudo chown "$USER:$GROUPS" /workdir
+        echo "FIRMWARE_VERSION=$(date +"%y%m%d")" >> "$GITHUB_ENV"
+        df -hT "$GITHUB_WORKSPACE"
+
     - name: 下载源码
       working-directory: /workdir
       run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-        
+        set -euo pipefail
+        df -hT "$PWD"
+        git clone "$REPO_URL" -b "$REPO_BRANCH" openwrt
+        ln -sf /workdir/openwrt "$GITHUB_WORKSPACE/openwrt"
+        git -C openwrt log -1 --pretty='源码版本：%h %s'
+
+    - name: 恢复 ccache 编译缓存
+      id: ccache
+      # 勾选 clean 时跳过恢复，本次用空缓存重编；本次编译后仍会保存新的缓存供后续使用
+      if: env.CLEAN_CCACHE != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-
+          ccache-360t7-2102-${{ runner.os }}-
+
+    - name: 恢复 dl 下载缓存
+      id: dl
+      uses: actions/cache@v4
+      with:
+        path: /workdir/openwrt/dl
+        key: dl-360t7-2102-${{ hashFiles('pure.config') }}-${{ github.run_id }}
+        restore-keys: |
+          dl-360t7-2102-
+
+    - name: 缓存状态
+      shell: bash
+      env:
+        CCACHE_KEY: ${{ steps.ccache.outputs.cache-matched-key }}
+        DL_KEY: ${{ steps.dl.outputs.cache-matched-key }}
+      run: |
+        set -uo pipefail
+        echo "ccache 命中缓存：${CCACHE_KEY:-未命中（空缓存编译）}"
+        echo "dl 命中缓存：${DL_KEY:-未命中}"
+        du -sh "$CCACHE_DIR" openwrt/dl 2>/dev/null || true
+
     - name: 加载软件源
       run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
+        set -euo pipefail
+        # 仓库默认不带 feeds.conf.default；只有自己提供了才覆盖上游的
+        if [ -e "$FEEDS_CONF" ]; then
+          echo "使用仓库自带的 $FEEDS_CONF"
+          mv "$FEEDS_CONF" openwrt/feeds.conf.default
+        fi
+        chmod +x "$DIY_P1_SH"
         cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
-        
+        "$GITHUB_WORKSPACE/$DIY_P1_SH"
+
     - name: 更新软件源
-      run: cd openwrt && ./scripts/feeds update -a
+      run: |
+        set -euo pipefail
+        cd openwrt
+        ./scripts/feeds update -a
 
     - name: 安装软件源
-      run: cd openwrt && ./scripts/feeds install -a
+      run: |
+        set -euo pipefail
+        cd openwrt
+        ./scripts/feeds install -a
 
-    # ============ 替换为这个步骤 ============
     - name: 禁用冲突插件（避免依赖错误）
       run: |
+        set -euo pipefail
         cd openwrt
         echo "🔧 彻底删除冲突插件，保留 openclash..."
-        
-        # 完全删除需要 Firewall4/Rust 的插件（不仅仅是重命名）
+        # scripts/feeds 生成的 package/feeds/<feed>/<pkg> 是符号链接，必须同时匹配链接
         for pkg in dns2socks-rust luci-app-fchomo luci-app-homeproxy momo nikki luci-app-passwall2; do
-          if [ -d "package/feeds/small/$pkg" ]; then
+          if [ -e "package/feeds/small/$pkg" ] || [ -L "package/feeds/small/$pkg" ]; then
             echo "  🗑️  删除: $pkg"
-            rm -rf "package/feeds/small/$pkg"
           fi
+          find package/feeds -maxdepth 3 -name "$pkg" \( -type d -o -type l \) -exec rm -rf {} + 2>/dev/null || true
         done
-        
-        # 同时也检查 feeds 其他目录
-        for pkg in dns2socks-rust luci-app-fchomo luci-app-homeproxy momo nikki luci-app-passwall2; do
-          find package/feeds -name "$pkg" -type d -exec rm -rf {} \; 2>/dev/null || true
-        done
-        
         echo "✅ 冲突插件清理完成"
-    # ============ 步骤结束 ============
 
     - name: 加载自定义配置
       run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
+        set -euo pipefail
+        if [ -d files ]; then
+          mv files openwrt/files
+        fi
+        if [ ! -s "$CONFIG_FILE" ]; then
+          echo "::error::缺少配置文件 $CONFIG_FILE"
+          exit 1
+        fi
+        mv "$CONFIG_FILE" openwrt/.config
+        chmod +x "$DIY_P2_SH"
         cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
-        
+        "$GITHUB_WORKSPACE/$DIY_P2_SH"
+
     - name: 接入官方最新发布版 OpenClash
       shell: bash
       env:
@@ -108,7 +190,7 @@ jobs:
         import subprocess
         import tempfile
         from urllib.request import Request, urlopen
-        
+
         root = Path.cwd()
         if not (root / 'scripts/feeds').is_file():
             raise SystemExit('请在 OpenWrt 源码根目录运行')
@@ -196,6 +278,7 @@ jobs:
     - name: 下载包
       id: package
       run: |
+        set -euo pipefail
         cd openwrt
         # 放在 DIY 脚本之后，避免自定义脚本再次选中 Clashoo。
         python3 - <<'CONFIGEDIT'
@@ -214,7 +297,7 @@ jobs:
         from pathlib import Path
         import os
         import re
-        
+
         text = Path('.config').read_text()
         selected = dict(re.findall(r'^(CONFIG_[A-Za-z0-9_-]+)=([ym])$', text, re.M))
         required = [
@@ -228,6 +311,7 @@ jobs:
          'PACKAGE_kmod-ipt-nat', 'PACKAGE_kmod-tun', 'PACKAGE_kmod-inet-diag',
          'PACKAGE_kmod-mt_wifi', 'PACKAGE_kmod-conninfra', 'PACKAGE_luci-app-mtk',
          'PACKAGE_fstools', 'PACKAGE_mtd', 'PACKAGE_fwtool',
+         'CCACHE',
         ]
         errors = []
         for symbol in required:
@@ -270,10 +354,11 @@ jobs:
           echo "::error::OpenClash 未选中，请检查包定义和依赖"
           exit 1
         fi
-        make download -j16
+        # 网络抖动时降并发重试，避免个别包下载失败直接中止
+        make download -j"$(nproc)" || make download -j8 || make download -j1
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
-        
+
     - name: 编译固件
       id: compile
       shell: bash
@@ -288,6 +373,22 @@ jobs:
           echo "::error::固件编译失败，请下载编译诊断日志查看 build-verbose.log"
           exit 1
         fi
+
+    - name: 输出 ccache 命中率
+      if: always()
+      shell: bash
+      run: |
+        set -uo pipefail
+        ccache -s | tee "$GITHUB_WORKSPACE/ccache-stats.txt" || true
+        { echo; ccache -p 2>/dev/null | grep -E '^(cache_dir|max_size|compression)' || true; } >> "$GITHUB_WORKSPACE/ccache-stats.txt"
+
+    - name: 保存 ccache 编译缓存
+      if: always()
+      continue-on-error: true
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: 核对 OpenClash 安装包版本
       shell: bash
@@ -327,12 +428,20 @@ jobs:
         for image in "$target_dir"/*factory.bin "$target_dir"/*factory.ubi "$target_dir"/*factory.itb; do
           cp -- "$image" "$output_dir/"
         done
+        # 随固件记录构建来源，便于事后追溯
+        {
+          echo "构建时间: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "运行链接: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "源码: ${REPO_URL} (${REPO_BRANCH}) $(git -C openwrt rev-parse --short HEAD)"
+          echo "OpenClash: ${OPENCLASH_TAG} (${OPENCLASH_VERSION})"
+          echo "配置摘要: $(sha256sum "$GITHUB_WORKSPACE/resolved.config" | cut -d' ' -f1)"
+        } > "$output_dir/build-info.txt"
         (cd "$output_dir" && sha256sum -- * > SHA256SUMS)
         echo "FIRMWARE=$output_dir" >> "$GITHUB_ENV"
         echo "status=success" >> "$GITHUB_OUTPUT"
 
     - name: 上传编译诊断日志
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7.0.2
       if: always()
       with:
         name: build-diagnostics-${{ github.run_id }}
@@ -345,55 +454,86 @@ jobs:
           openwrt/tmp/.packageinfo
           build-parallel.log
           build-verbose.log
+          ccache-stats.txt
           openwrt/.config
           openwrt/bin/targets/mediatek/mt7981/*.buildinfo
           openwrt/bin/targets/mediatek/mt7981/profiles.json
+          firmware-output/build-info.txt
 
     - name: 上传固件到Github Action空间
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7.0.2
       if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
       with:
         name: ${{ env.FIRMWARE_VERSION }}-OpenWrt-360T7
         path: ${{ env.FIRMWARE }}
-        
+
     - name: 创建release标签
       id: tag
       if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+      shell: bash
       run: |
-         time=$(date +%Y.%m.%d)
-         release_tag="360T7-hanwckf-ImmortalWrt-$time"
-         release_name="360T7-hanwckf-ImmortalWrt-$time"
-         echo "跟进上游变更
-         默认网关：192.168.77.1
-         登录密码：--
-         内置 OpenClash $OPENCLASH_TAG">> release.txt
-         echo "release_name=$release_name" >> $GITHUB_OUTPUT
-         echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
-         echo "status=success" >> $GITHUB_OUTPUT
-        
+        set -euo pipefail
+        build_time="$(date '+%Y.%m.%d %H:%M:%S %Z')"
+        # 同一天可以多次构建：tag 带时间与运行号，避免互相覆盖同一个 release
+        release_tag="${RELEASE_PREFIX}-$(date +%Y%m%d-%H%M%S)-${GITHUB_RUN_ID}"
+        release_name="${RELEASE_PREFIX}-$(date +%Y.%m.%d)"
+        {
+          echo "跟进上游变更"
+          echo
+          echo "- 默认网关：192.168.77.1"
+          echo "- 登录密码：--"
+          echo "- 设备：360 T7（108M UBI）"
+          echo "- 源码：${REPO_URL}（${REPO_BRANCH}）"
+          echo "- 内置 OpenClash：${OPENCLASH_TAG}"
+          echo "- 构建时间：${build_time}"
+        } > release.txt
+        cat release.txt
+        echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+        echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+        echo "status=success" >> "$GITHUB_OUTPUT"
+
     - name: 将固件上传到release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3.0.4
       if: success() && steps.organize.outputs.status == 'success' && steps.tag.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
       env:
         GITHUB_TOKEN: ${{ secrets.GIT_USER_TOKEN }}
       with:
-         name: ${{ steps.tag.outputs.release_name }} 
-         tag_name: ${{ steps.tag.outputs.release_tag }}
-         body_path: release.txt
-         fail_on_unmatched_files: true
-         files: ${{ env.FIRMWARE }}/*
+        name: ${{ steps.tag.outputs.release_name }}
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        fail_on_unmatched_files: true
+        files: ${{ env.FIRMWARE }}/*
 
-    - name: 删除工作流运行
-      uses: GitRML/delete-workflow-runs@main
-      with:
-        retain_days: 1
-        keep_minimum_runs: 3
+    - name: 删除旧的工作流运行
+      if: always()
+      shell: bash
+      env:
+        # 删除运行只需要内置 token（已授予 actions: write），不依赖 PAT
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -uo pipefail
+        workflow_file="$(basename "${GITHUB_WORKFLOW_REF%%@*}")"
+        gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?per_page=100&status=completed" \
+          --jq '.workflow_runs[].id' 2>/dev/null \
+          | grep -vx "${GITHUB_RUN_ID}" \
+          | tail -n +$((KEEP_RUNS + 1)) \
+          | while read -r run_id; do
+              echo "删除运行：${run_id}"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" || true
+            done
 
     - name: 删除旧的releases
-      uses: dev-drprasad/delete-older-releases@v0.2.1
       if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
-      with:
-        keep_latest: 10
-        delete_tags: true
+      shell: bash
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GIT_USER_TOKEN }}
+      run: |
+        set -uo pipefail
+        # 按你的设计：按仓库内 release 总数清理
+        # 只保留最新 KEEP_RELEASES 个
+        gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft | not) | .tagName' 2>/dev/null \
+          | tail -n +$((KEEP_RELEASES + 1)) \
+          | while read -r tag; do
+              echo "删除旧 release：${tag}"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            done
