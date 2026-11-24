@@ -80,6 +80,8 @@ jobs:
           test -f "$DIY_P1_SH"
           cd openwrt
           bash "$GITHUB_WORKSPACE/$DIY_P1_SH"
+          # Vantage theme feed pinned to a reviewed commit for reproducible builds.
+          grep -q "^src-git vantage " feeds.conf.default || echo "src-git vantage https://github.com/anothaDev/luci-theme-vantage.git^df52ecbf310e67b9ab36fc60c4a7df324427c043" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           cp feeds.conf.default "$GITHUB_WORKSPACE/diagnostics/feeds.conf.default"
@@ -167,13 +169,13 @@ jobs:
           if devices != ['CONFIG_TARGET_mediatek_filogic_DEVICE_qihoo_360t7']:
               raise SystemExit('设备选择不是唯一的 360T7：' + repr(devices))
           PY
-          for symbol in TARGET_mediatek TARGET_mediatek_filogic TARGET_mediatek_filogic_DEVICE_qihoo_360t7 PACKAGE_luci-app-nikki PACKAGE_nikki PACKAGE_mihomo PACKAGE_firewall4 PACKAGE_yq CCACHE; do
+          for symbol in TARGET_mediatek TARGET_mediatek_filogic TARGET_mediatek_filogic_DEVICE_qihoo_360t7 PACKAGE_luci-app-nikki PACKAGE_nikki PACKAGE_mihomo PACKAGE_firewall4 PACKAGE_yq PACKAGE_luci-theme-vantage PACKAGE_luci-i18n-vantage-theme-zh-cn CCACHE; do
             if ! grep -qx "CONFIG_${symbol}=y" .config; then
               echo "::error::关键配置未生效：CONFIG_${symbol}=y"
               exit 1
             fi
           done
-          for symbol in PACKAGE_firewall PACKAGE_sing-box PACKAGE_ruby PACKAGE_libruby PACKAGE_luci-app-turboacc-mtk PACKAGE_luci-i18n-turboacc-mtk-zh-cn PACKAGE_haproxy PACKAGE_chinadns-ng PACKAGE_geoview PACKAGE_ebtables-legacy PACKAGE_ebtables-legacy-utils PACKAGE_iptables-nft PACKAGE_ipset PACKAGE_kmod-ebtables PACKAGE_kmod-ebtables-ipv4 PACKAGE_kmod-ebtables-ipv6; do
+          for symbol in PACKAGE_firewall PACKAGE_sing-box PACKAGE_ruby PACKAGE_libruby PACKAGE_luci-app-turboacc-mtk PACKAGE_luci-i18n-turboacc-mtk-zh-cn PACKAGE_haproxy PACKAGE_chinadns-ng PACKAGE_geoview PACKAGE_luci-theme-argon PACKAGE_ebtables-legacy PACKAGE_ebtables-legacy-utils PACKAGE_iptables-nft PACKAGE_ipset PACKAGE_kmod-ebtables PACKAGE_kmod-ebtables-ipv4 PACKAGE_kmod-ebtables-ipv6 PACKAGE_kmod-veth PACKAGE_kmod-wireguard; do
             if grep -Eq "^CONFIG_${symbol}=[ym]$" .config; then
               echo "::error::应禁用的配置被重新选中：CONFIG_${symbol}"
               exit 1
@@ -240,8 +242,8 @@ jobs:
               raise SystemExit('无法唯一确定固件包清单，拒绝发布')
           packages = {line.split(' - ', 1)[0].strip()
                       for line in manifests[0].read_text().splitlines() if line.strip()}
-          required = {'luci-app-nikki', 'nikki', 'mihomo', 'firewall4', 'curl', 'ip-full', 'yq'}
-          forbidden = {'firewall', 'sing-box', 'ruby', 'libruby3.3', 'haproxy', 'chinadns-ng', 'geoview', 'ebtables-legacy', 'ebtables-legacy-utils', 'iptables-nft', 'ipset', 'kmod-ebtables', 'kmod-ebtables-ipv4', 'kmod-ebtables-ipv6', 'luci-app-turboacc-mtk', 'luci-i18n-turboacc-mtk-zh-cn'}
+          required = {'luci-app-nikki', 'nikki', 'mihomo', 'firewall4', 'curl', 'ip-full', 'yq', 'luci-theme-vantage', 'luci-i18n-vantage-theme-zh-cn'}
+          forbidden = {'firewall', 'sing-box', 'ruby', 'libruby3.3', 'haproxy', 'chinadns-ng', 'geoview', 'ebtables-legacy', 'ebtables-legacy-utils', 'iptables-nft', 'ipset', 'kmod-ebtables', 'kmod-ebtables-ipv4', 'kmod-ebtables-ipv6', 'kmod-veth', 'kmod-wireguard', 'wireguard-tools', 'luci-proto-wireguard', 'luci-app-turboacc-mtk', 'luci-i18n-turboacc-mtk-zh-cn', 'luci-theme-argon'}
           missing, unwanted = required - packages, forbidden & packages
           if missing or unwanted:
               raise SystemExit(f'固件包清单检查失败：缺失 {sorted(missing)}；不应包含 {sorted(unwanted)}')
@@ -268,12 +270,7 @@ jobs:
           - 源码分支：$REPO_BRANCH
           - 源码提交：$source_commit
           - 首次初始化 LAN 地址：192.168.77.1
-          - 主机名：360T7
-          - 仅保留 Nikki 透明代理；移除 sing-box、Ruby 和无关代理/防火墙组件
-          - 保留旧配置升级时，网络设置及密码以恢复后的配置为准
-          - 已核对固件包清单：包含 Nikki、Mihomo、firewall4，不含 sing-box、Ruby、turboacc-mtk 及旧版防火墙组件
-          - 配置变化报告：config-and-logs 产物中的 config-changes.txt
-          - 构建日志与最终配置：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - 仅保留 Nikki 透明代理；使用 Vantage 主题
           EOF
           echo "firmware=$firmware_dir" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
