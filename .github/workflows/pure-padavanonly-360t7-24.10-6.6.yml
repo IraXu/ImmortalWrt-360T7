@@ -40,17 +40,17 @@ jobs:
         shell: bash
     steps:
       - name: 检出项目
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: 释放磁盘空间
         uses: jlumbroso/free-disk-space@cf1e78c50ca91e757bab3edc229027eebfc07871 # 固定已核对的提交
         with:
-          tool-cache: true
+          preinstalled-runtimes: true
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
-          docker-images: true
+          large-packages: false
+          docker-images: false
           swap-storage: false
 
       - name: 初始化环境
@@ -90,6 +90,33 @@ jobs:
               printf '%s %s\n' "$feed" "$(git -C "$feed" rev-parse HEAD)"
             fi
           done > "$GITHUB_WORKSPACE/diagnostics/feed-commits.txt"
+
+      - name: 避免 Mihomo UPX 与 SquashFS 重复压缩
+        run: |
+          cd openwrt
+          python3 - <<'PY'
+          import pathlib
+          import re
+          source = pathlib.Path('package/feeds/small/mihomo')
+          if not source.is_dir():
+              raise SystemExit('cannot locate small/mihomo package; review feed selection')
+          prepare = source / '.prepare.sh'
+          content = prepare.read_text()
+          pattern = r'upx -9 "\$BIN_PATH"'
+          content, count = re.subn(pattern, ': # UPX disabled: let SquashFS XZ compress the executable', content)
+          if count != 1:
+              raise SystemExit('Mihomo UPX hook changed; review before building')
+          prepare.write_text(content)
+          makefile = source / 'Makefile'
+          content = makefile.read_text()
+          marker = 'include $(INCLUDE_DIR)/package.mk'
+          if content.count(marker) != 1:
+              raise SystemExit('Mihomo Makefile format changed')
+          content = content.replace(marker, 'GO_PKG_LDFLAGS += -s -w\n\n' + marker)
+          makefile.write_text(content)
+          PY
+          cp feeds/small/mihomo/Makefile "$GITHUB_WORKSPACE/diagnostics/mihomo.Makefile"
+          cp feeds/small/mihomo/.prepare.sh "$GITHUB_WORKSPACE/diagnostics/mihomo.prepare.sh"
 
       - name: 加载配置和初始化设置
         run: |
@@ -186,12 +213,41 @@ jobs:
         id: cache
         continue-on-error: true
         if: env.CLEAN_CCACHE != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6.1.0
         with:
           path: /workdir/openwrt/.ccache
           key: ccache-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles('6.6_pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles('6.6_pure.config') }}-
+            ccache-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-
+
+      - name: 恢复下载和 Go 编译缓存
+        id: extra_cache
+        if: env.CLEAN_CCACHE != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            /workdir/openwrt/dl
+            /workdir/openwrt/.go-cache
+            /workdir/openwrt/.go-mod-cache
+          key: sources-go-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sources-go-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-
+
+      - name: 记录缓存和机器状态
+        env:
+          CCACHE_MATCH: ${{ steps.cache.outputs.cache-matched-key }}
+          EXTRA_MATCH: ${{ steps.extra_cache.outputs.cache-matched-key }}
+        run: |
+          {
+            echo "ccache restored key: ${CCACHE_MATCH:-MISS}"
+            echo "download/go restored key: ${EXTRA_MATCH:-MISS}"
+            nproc
+            free -h
+            df -h /workdir
+            du -sh /workdir/openwrt/.ccache /workdir/openwrt/dl /workdir/openwrt/.go-cache /workdir/openwrt/.go-mod-cache 2>/dev/null || true
+          } | tee diagnostics/cache-restore.txt
 
       - name: 下载软件包
         run: |
@@ -205,21 +261,75 @@ jobs:
         run: |
           cd openwrt
           mkdir -p .ccache
-          if ! make -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/build-parallel.log"; then
-            make -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/build-serial.log"
+          CCACHE_DIR="$PWD/.ccache" ccache -z || true
+          build_started=$SECONDS
+          if ! make GO_BUILD_CACHE_DIR="$PWD/.go-cache" GO_MOD_CACHE_DIR="$PWD/.go-mod-cache" -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/build-parallel.log"; then
+            echo "parallel build failed; retrying serially" | tee "$GITHUB_WORKSPACE/diagnostics/serial-retry.txt"
+            make GO_BUILD_CACHE_DIR="$PWD/.go-cache" GO_MOD_CACHE_DIR="$PWD/.go-mod-cache" -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/build-serial.log"
           fi
           if [ -x staging_dir/host/bin/ccache ]; then
             CCACHE_DIR="$PWD/.ccache" staging_dir/host/bin/ccache -s | tee "$GITHUB_WORKSPACE/diagnostics/ccache.txt"
           fi
+          echo "build_seconds=$((SECONDS - build_started))" > "$GITHUB_WORKSPACE/diagnostics/build-time.txt"
+          cp .config "$GITHUB_WORKSPACE/diagnostics/config.after-build"
           echo 'status=success' >> "$GITHUB_OUTPUT"
 
       - name: 保存编译缓存
         if: steps.compile.outputs.status == 'success'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6.1.0
         with:
           path: /workdir/openwrt/.ccache
           key: ccache-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles('6.6_pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 保存下载和 Go 编译缓存
+        if: steps.compile.outputs.status == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            /workdir/openwrt/dl
+            /workdir/openwrt/.go-cache
+            /workdir/openwrt/.go-mod-cache
+          key: sources-go-360t7-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 生成镜像文件体积报告
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd openwrt
+          python3 - <<'PY'
+          import os, pathlib, subprocess, tarfile
+          diagnostics = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'diagnostics'
+          images = list(pathlib.Path('bin/targets/mediatek/filogic').glob('*360t7*sysupgrade.bin'))
+          if len(images) != 1:
+              raise SystemExit('cannot identify 360T7 sysupgrade image')
+          rows = []
+          with tarfile.open(images[0]) as archive:
+              for member in archive:
+                  rows.append(f'{member.size}\t{member.name}')
+                  if member.isfile() and member.name.endswith('/root'):
+                      stream = archive.extractfile(member)
+                      with (diagnostics / 'rootfs.squashfs').open('wb') as dst:
+                          import shutil
+                          shutil.copyfileobj(stream, dst)
+          (diagnostics / 'image-members.txt').write_text('\n'.join(rows) + '\n')
+          import shutil
+          candidates = ['staging_dir/host/bin/unsquashfs4', 'staging_dir/host/bin/unsquashfs']
+          unsquashfs = next((str(pathlib.Path(p).resolve()) for p in candidates if pathlib.Path(p).is_file()), shutil.which('unsquashfs'))
+          if not unsquashfs:
+              raise SystemExit('unsquashfs missing')
+          rootfs = diagnostics / 'rootfs.squashfs'
+          with (diagnostics / 'rootfs-superblock.txt').open('w') as log:
+              subprocess.run([str(unsquashfs), '-s', str(rootfs)], stdout=log, check=True)
+          tree = pathlib.Path('/workdir/size-report-rootfs')
+          result = subprocess.run([str(unsquashfs), '-no-progress', '-d', str(tree), str(rootfs)])
+          if result.returncode not in (0, 2):
+              raise SystemExit('rootfs extraction failed')  # 2: nonfatal, e.g. non-root cannot create /dev/console
+          files = sorted(((f.stat().st_size, str(f.relative_to(tree)))
+                          for f in tree.rglob('*') if f.is_file() and not f.is_symlink()), reverse=True)
+          (diagnostics / 'largest-files.tsv').write_text('bytes\tpath\n' + '\n'.join(f'{size}\t{name}' for size, name in files[:150]) + '\n')
+          rootfs.unlink()
+          PY
 
       - name: 整理固件及发布说明
         id: organize
@@ -249,6 +359,8 @@ jobs:
               raise SystemExit(f'固件包清单检查失败：缺失 {sorted(missing)}；不应包含 {sorted(unwanted)}')
           destination.mkdir(parents=True, exist_ok=True)
           selected = images + manifests
+          diagnostics = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'diagnostics'
+          selected += [diagnostics / name for name in ['config.after-build', 'config-changes.txt', 'ccache.txt', 'cache-restore.txt', 'largest-files.tsv', 'rootfs-superblock.txt', 'image-members.txt'] if (diagnostics / name).is_file()]
           selected += [target / name for name in
                        ['config.buildinfo', 'feeds.buildinfo', 'version.buildinfo', 'profiles.json']
                        if (target / name).is_file()]
@@ -270,7 +382,8 @@ jobs:
           - 源码分支：$REPO_BRANCH
           - 源码提交：$source_commit
           - 首次初始化 LAN 地址：192.168.77.1
-          - 仅保留 Nikki 透明代理；使用 Vantage 主题
+          - 主机名：360T7
+          - 内置Nikki + Mihomo；使用 Vantage 主题
           EOF
           echo "firmware=$firmware_dir" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
@@ -279,7 +392,7 @@ jobs:
 
       - name: 上传固件
         if: steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: OpenWrt-360T7-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.organize.outputs.firmware }}
@@ -287,7 +400,7 @@ jobs:
 
       - name: 发布固件
         if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3.0.4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ steps.organize.outputs.release_tag }}
@@ -300,7 +413,7 @@ jobs:
       # 不再自动删除历史 Release / 运行记录，保留排查配置问题所需的证据。
       - name: 上传配置及日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: config-and-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: diagnostics/
