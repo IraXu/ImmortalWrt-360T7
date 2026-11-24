@@ -252,8 +252,8 @@ jobs:
       - name: 下载软件包
         run: |
           cd openwrt
-          if ! make download -j8 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download.log"; then
-            make download -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download-retry.log"
+          if ! make GO_BUILD_CACHE_DIR="$PWD/.go-cache" GO_MOD_CACHE_DIR="$PWD/.go-mod-cache" download -j8 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download.log"; then
+            make GO_BUILD_CACHE_DIR="$PWD/.go-cache" GO_MOD_CACHE_DIR="$PWD/.go-mod-cache" download -j1 V=s 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/download-retry.log"
           fi
 
       - name: 编译固件
@@ -383,7 +383,11 @@ jobs:
           - 源码提交：$source_commit
           - 首次初始化 LAN 地址：192.168.77.1
           - 主机名：360T7
-          - 内置Nikki + Mihomo；使用 Vantage 主题
+          - 仅保留 Nikki 透明代理；LuCI 使用 Vantage 主题
+          - 保留旧配置升级时，网络设置及密码以恢复后的配置为准
+          - 已核对固件包清单：包含 Nikki、Mihomo、firewall4，不含 sing-box、Ruby、turboacc-mtk 及旧版防火墙组件
+          - 配置变化报告：config-and-logs 产物中的 config-changes.txt
+          - 构建日志与最终配置：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           EOF
           echo "firmware=$firmware_dir" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
