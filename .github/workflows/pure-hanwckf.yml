@@ -50,6 +50,22 @@ jobs:
     - name: 检查项目分支
       uses: actions/checkout@v7.0.1
 
+    - name: 计算配置指纹
+      id: cfg
+      shell: bash
+      # 必须在 pure.config 被移进 openwrt/.config 之前算：
+      # hashFiles() 在「加载自定义配置」之后求值会拿到空串，缓存 key 就会退化成
+      # 「每次运行一个新 key」，既失去配置变更保护，又每次都往缓存里多写 300+MB
+      run: |
+        set -euo pipefail
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "::error::找不到配置文件 $CONFIG_FILE"
+          exit 1
+        fi
+        hash="$(sha256sum "$CONFIG_FILE" | cut -c1-16)"
+        echo "配置指纹：${hash}（缓存 key 用它区分配置）"
+        echo "hash=${hash}" >> "$GITHUB_OUTPUT"
+
     - name: 初始化编译环境
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -96,9 +112,11 @@ jobs:
       uses: actions/cache/restore@v5
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        # key 里不带 run_id：同一配置下 key 固定，命中就精确命中、不再重复上传几百 MB；
+        # 换了配置才会写新 key。restore-keys 二级回退：同配置取不到就退到「任意配置的最近一份」
+        key: ccache-360t7-2102-${{ runner.os }}-${{ steps.cfg.outputs.hash }}
         restore-keys: |
-          ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-
+          ccache-360t7-2102-${{ runner.os }}-${{ steps.cfg.outputs.hash }}
           ccache-360t7-2102-${{ runner.os }}-
 
     - name: 恢复 dl 下载缓存
@@ -109,7 +127,7 @@ jobs:
       uses: actions/cache@v5
       with:
         path: /workdir/openwrt/dl
-        key: dl-360t7-2102-${{ hashFiles('pure.config') }}
+        key: dl-360t7-2102-${{ steps.cfg.outputs.hash }}
         restore-keys: |
           dl-360t7-2102-
 
@@ -119,12 +137,14 @@ jobs:
         CCACHE_HIT: ${{ steps.ccache.outputs.cache-hit }}
         CCACHE_KEY: ${{ steps.ccache.outputs.cache-matched-key }}
         DL_HIT: ${{ steps.dl.outputs.cache-hit }}
+        CFG_HASH: ${{ steps.cfg.outputs.hash }}
       run: |
         set -uo pipefail
         # restore@v5 有 cache-matched-key；合并版 cache@v5 只有 cache-hit，别混用
         echo "ccache 恢复：${CCACHE_HIT:-skipped}（跳过=勾了 clean 或该步未执行）"
         echo "ccache 命中 key：${CCACHE_KEY:-无（本次冷编译）}"
         echo "dl 恢复：${DL_HIT:-false}"
+        echo "配置指纹：${CFG_HASH:-未知}"
         du -sh "$CCACHE_DIR" openwrt/dl 2>/dev/null || true
 
     - name: 加载软件源
@@ -390,12 +410,16 @@ jobs:
         { echo; ccache -p 2>/dev/null | grep -E '^(cache_dir|max_size|compression)' || true; } >> "$GITHUB_WORKSPACE/ccache-stats.txt"
 
     - name: 保存 ccache 编译缓存
-      if: always()
+      # 精确命中（同一配置的缓存已存在）就不再写一份，否则每次运行都会多出 300+MB 缓存，
+      # 很快挤爆仓库 10GB 配额并把 24.10 工作流的缓存挤掉。
+      # 勾了 clean 时恢复步骤被跳过，这里仍会尝试保存；若该配置的缓存已存在，保存会报「已存在」，
+      # continue-on-error 让它只告警、不影响构建。
+      if: always() && steps.ccache.outputs.cache-hit != 'true'
       continue-on-error: true
       uses: actions/cache/save@v5
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: ccache-360t7-2102-${{ runner.os }}-${{ steps.cfg.outputs.hash }}
 
     - name: 核对 OpenClash 安装包版本
       shell: bash
