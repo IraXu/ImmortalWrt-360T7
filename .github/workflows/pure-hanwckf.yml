@@ -93,7 +93,7 @@ jobs:
       id: ccache
       # 勾选 clean 时跳过恢复，本次用空缓存重编；本次编译后仍会保存新的缓存供后续使用
       if: env.CLEAN_CCACHE != 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -103,22 +103,28 @@ jobs:
 
     - name: 恢复 dl 下载缓存
       id: dl
-      uses: actions/cache@v4
+      # 用内容稳定的 key：命中就不重复上传（actions/cache 命中后不会再写一份，省流量省时间）；
+      # 只有 pure.config 变了才会写新 key。注意它的 post 保存是 if: success()，
+      # 所以本次运行失败时不会保存 —— 这是 action 自己的行为，不影响下次命中旧缓存。
+      uses: actions/cache@v5
       with:
         path: /workdir/openwrt/dl
-        key: dl-360t7-2102-${{ hashFiles('pure.config') }}-${{ github.run_id }}
+        key: dl-360t7-2102-${{ hashFiles('pure.config') }}
         restore-keys: |
           dl-360t7-2102-
 
     - name: 缓存状态
       shell: bash
       env:
+        CCACHE_HIT: ${{ steps.ccache.outputs.cache-hit }}
         CCACHE_KEY: ${{ steps.ccache.outputs.cache-matched-key }}
-        DL_KEY: ${{ steps.dl.outputs.cache-matched-key }}
+        DL_HIT: ${{ steps.dl.outputs.cache-hit }}
       run: |
         set -uo pipefail
-        echo "ccache 命中缓存：${CCACHE_KEY:-未命中（空缓存编译）}"
-        echo "dl 命中缓存：${DL_KEY:-未命中}"
+        # restore@v5 有 cache-matched-key；合并版 cache@v5 只有 cache-hit，别混用
+        echo "ccache 恢复：${CCACHE_HIT:-skipped}（跳过=勾了 clean 或该步未执行）"
+        echo "ccache 命中 key：${CCACHE_KEY:-无（本次冷编译）}"
+        echo "dl 恢复：${DL_HIT:-false}"
         du -sh "$CCACHE_DIR" openwrt/dl 2>/dev/null || true
 
     - name: 加载软件源
@@ -379,13 +385,14 @@ jobs:
       shell: bash
       run: |
         set -uo pipefail
-        ccache -s | tee "$GITHUB_WORKSPACE/ccache-stats.txt" || true
+        { ccache -s; echo; echo "=== ccache 目录 ==="; du -sh "$CCACHE_DIR"; } \
+          | tee "$GITHUB_WORKSPACE/ccache-stats.txt" || true
         { echo; ccache -p 2>/dev/null | grep -E '^(cache_dir|max_size|compression)' || true; } >> "$GITHUB_WORKSPACE/ccache-stats.txt"
 
     - name: 保存 ccache 编译缓存
       if: always()
       continue-on-error: true
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ccache-360t7-2102-${{ runner.os }}-${{ hashFiles('pure.config') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -486,6 +493,7 @@ jobs:
           echo "- 源码：${REPO_URL}（${REPO_BRANCH}）"
           echo "- 内置 OpenClash：${OPENCLASH_TAG}"
           echo "- 构建时间：${build_time}"
+          echo "- 构建日志：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         } > release.txt
         cat release.txt
         echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
@@ -496,6 +504,9 @@ jobs:
       uses: softprops/action-gh-release@v3.0.4
       if: success() && steps.organize.outputs.status == 'success' && steps.tag.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
       env:
+        # 注意：softprops/action-gh-release@v3 的 token 输入默认就是 ${{ github.token }}，
+        # 这个 GITHUB_TOKEN 环境变量在 v3 里不再生效（v1/v2 才读它）。
+        # 想以个人身份发布，请先修好 secrets.GIT_USER_TOKEN，再在 with 里显式加 token: ${{ secrets.GIT_USER_TOKEN }}
         GITHUB_TOKEN: ${{ secrets.GIT_USER_TOKEN }}
       with:
         name: ${{ steps.tag.outputs.release_name }}
@@ -506,34 +517,50 @@ jobs:
 
     - name: 删除旧的工作流运行
       if: always()
+      # 收尾清理属于附加动作：失败只告警，不把已经成功的构建标红
+      continue-on-error: true
       shell: bash
       env:
-        # 删除运行只需要内置 token（已授予 actions: write），不依赖 PAT
+        # 只需要内置 token（permissions 已授予 actions: write），不依赖 PAT
         GH_TOKEN: ${{ github.token }}
       run: |
         set -uo pipefail
         workflow_file="$(basename "${GITHUB_WORKFLOW_REF%%@*}")"
-        gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?per_page=100&status=completed" \
-          --jq '.workflow_runs[].id' 2>/dev/null \
-          | grep -vx "${GITHUB_RUN_ID}" \
-          | tail -n +$((KEEP_RUNS + 1)) \
-          | while read -r run_id; do
-              echo "删除运行：${run_id}"
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" || true
-            done
+        url="repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?per_page=100&status=completed"
+        if ! ids="$(gh api "$url" --jq '.workflow_runs[].id')"; then
+          echo "::warning::读取工作流运行列表失败，本次跳过清理"
+          exit 0
+        fi
+        # 用 sed/awk 而不是 grep：grep 无匹配时返回 1，会被 pipefail 判成失败
+        printf '%s\n' "$ids" | sed '/^$/d' | awk -v cur="${GITHUB_RUN_ID}" '$0 != cur' > runs.txt
+        echo "已完成运行数：$(wc -l < runs.txt | tr -d ' ')，本次保留最新 ${KEEP_RUNS} 个"
+        tail -n +"$((KEEP_RUNS + 1))" runs.txt | while read -r run_id; do
+          echo "删除运行：${run_id}"
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+            || echo "::warning::删除运行 ${run_id} 失败"
+        done
 
     - name: 删除旧的releases
       if: success() && steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+      # 收尾清理属于附加动作：失败只告警，不把已经成功的构建标红
+      continue-on-error: true
       shell: bash
       env:
-        GH_TOKEN: ${{ secrets.GIT_USER_TOKEN }}
+        # 用内置 token（permissions 已授予 contents: write）：PAT 过期/未配置时这里不会 401
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -uo pipefail
-        # 按你的设计：按仓库内 release 总数清理
-        # 只保留最新 KEEP_RELEASES 个
-        gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft | not) | .tagName' 2>/dev/null \
-          | tail -n +$((KEEP_RELEASES + 1)) \
-          | while read -r tag; do
-              echo "删除旧 release：${tag}"
-              gh release delete "$tag" --yes --cleanup-tag || true
-            done
+        # 按你的设计：按仓库内 release 总数清理（含另一个工作流发布的固件），只保留最新 KEEP_RELEASES 个；
+        # 故意不按 tag 前缀过滤，请勿修改。
+        if ! tags="$(gh release list --limit 100 --json tagName,isDraft \
+              --jq '.[] | select(.isDraft | not) | .tagName')"; then
+          echo "::warning::读取 release 列表失败（token 无权限或 API 异常），本次跳过清理"
+          exit 0
+        fi
+        printf '%s\n' "$tags" | awk 'NF' > releases.txt
+        echo "当前 release 数：$(wc -l < releases.txt | tr -d ' ')，保留最新 ${KEEP_RELEASES} 个"
+        tail -n +"$((KEEP_RELEASES + 1))" releases.txt | while read -r tag; do
+          echo "删除旧 release：${tag}"
+          gh release delete "$tag" --yes --cleanup-tag \
+            || echo "::warning::删除 ${tag} 失败（可能受 tag 保护规则限制）"
+        done
